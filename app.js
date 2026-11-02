@@ -1,164 +1,90 @@
-
-
 "use strict";
-
-/*
-
- * KRİPTO ANALİZ PLATFORMU
-
- * Dosya: app.js
-
- * Sürüm: 1.0
-
- *
-
- * Özellikler:
-
- * - CoinGecko API üzerinden piyasa verileri
-
- * - İlk 100 coin ve temel coinlerin takibi
-
- * - USD, USDT ve TRY gösterimi
-
- * - Coin arama ve filtreleme
-
- * - İzleme listesi
-
- * - RSI, EMA, MACD ve Bollinger Bands hesaplamaları
-
- * - Teknik analiz sonuçlarının erişilebilir gösterimi
-
- * - VoiceOver için durum duyuruları
-
- *
-
- * Önemli:
-
- * - USDT gösterimi USD fiyatına yaklaşık eşdeğer kabul edilir.
-
- * - API ücretsiz kullanım sınırlarına tabidir.
-
- * - Teknik göstergeler yatırım garantisi veya kesin tahmin değildir.
-
- * - Bu sürüm otomatik alım satım yapmaz.
-
- */
 
 (() => {
 
-  "use strict";
-
   const CONFIG = {
 
-    apiBase: "https://api.coingecko.com/api/v3",
+    coinGecko: "https://api.coingecko.com/api/v3",
 
-    refreshInterval: 60000,
+    binanceSpot: "https://api.binance.com",
 
-    defaultCurrency: "usd",
+    binanceUsdt: "https://fapi.binance.com",
 
-    marketPageSize: 100,
+    binanceCoin: "https://dapi.binance.com",
 
-    watchlistStorageKey: "kriptoAnalizIzlemeListesi",
+    refreshMs: 60000,
 
-    pinnedCoins: [
+    marketLimit: 100,
 
-      "bitcoin",
+    watchlistKey: "kriptoAnalizIzlemeListesi",
 
-      "ethereum",
+    pinned: [
 
-      "solana",
+      "bitcoin", "ethereum", "solana", "cardano",
 
-      "cardano",
+      "ripple", "dogecoin", "avalanche-2", "pepe"
 
-      "ripple",
+    ],
 
-      "pepe",
-
-      "dogecoin",
-
-      "avalanche-2"
-
-    ]
+    timeframes: ["5m", "15m", "1h", "4h", "1d", "1w"]
 
   };
 
   const state = {
 
-    currency: CONFIG.defaultCurrency,
+    currency: "usd",
+
+    market: "spot",
 
     coins: [],
 
-    filteredCoins: [],
+    filtered: [],
 
     watchlist: [],
+
+    signals: [],
+
+    selectedCoin: "",
 
     loading: false,
 
     analysisLoading: false,
 
-    lastUpdated: null,
-
     refreshTimer: null,
 
-    selectedCoin: null
+    lastUpdated: null
 
   };
 
-  const elements = {};
+  const $ = (id) => document.getElementById(id);
 
-  function getElement(id) {
-
-    return document.getElementById(id);
-
-  }
+  const el = {};
 
   function cacheElements() {
 
-    const ids = [
+    [
 
-      "connection-status",
+      "connection-status", "refresh-button", "currency-select",
 
-      "currency-select",
+      "market-type", "last-updated", "btc-price", "btc-change",
 
-      "refresh-button",
+      "market-overview-message", "currency-note", "coin-search",
 
-      "last-updated",
+      "market-sort", "market-table-body", "market-message",
 
-      "btc-price",
+      "signal-filter", "signal-table-body", "signal-message",
 
-      "btc-change",
+      "analysis-coin", "analysis-timeframe", "analysis-market",
 
-      "eth-price",
+      "coin-detail", "technical-analysis-results",
 
-      "eth-change",
+      "analysis-message", "watchlist-form", "watchlist-coin",
 
-      "sol-price",
+      "watchlist-items", "watchlist-message"
 
-      "sol-change",
+    ].forEach((id) => {
 
-      "coin-search",
-
-      "market-table-body",
-
-      "market-message",
-
-      "signal-table-body",
-
-      "analysis-coin",
-
-      "technical-analysis-results",
-
-      "watchlist-form",
-
-      "watchlist-coin",
-
-      "watchlist-items"
-
-    ];
-
-    ids.forEach((id) => {
-
-      elements[id] = getElement(id);
+      el[id] = $(id);
 
     });
 
@@ -166,55 +92,47 @@
 
   function announce(message) {
 
-    if (elements["connection-status"]) {
+    if (el["connection-status"]) {
 
-      elements["connection-status"].textContent = message;
-
-    }
-
-  }
-
-  function setMessage(message) {
-
-    if (elements["market-message"]) {
-
-      elements["market-message"].textContent = message;
+      el["connection-status"].textContent = message;
 
     }
 
   }
 
-  function formatNumber(value, digits = 2) {
+  function message(id, text, type = "") {
 
-    const number = Number(value);
+    if (!el[id]) return;
 
-    if (!Number.isFinite(number)) {
+    el[id].textContent = text;
 
-      return "Veri yok";
+    el[id].className = "status-message " + type;
 
-    }
+  }
+
+  function number(value, digits = 2) {
+
+    const n = Number(value);
+
+    if (!Number.isFinite(n)) return "Veri yok";
 
     return new Intl.NumberFormat("tr-TR", {
 
       maximumFractionDigits: digits
 
-    }).format(number);
+    }).format(n);
 
   }
 
-  function formatPrice(value) {
+  function price(value, currency = state.currency) {
 
-    const number = Number(value);
+    const n = Number(value);
 
-    if (!Number.isFinite(number)) {
+    if (!Number.isFinite(n)) return "Veri yok";
 
-      return "Veri yok";
+    if (currency === "usdt") {
 
-    }
-
-    if (state.currency === "usdt") {
-
-      return `${formatNumber(number, number < 1 ? 8 : 2)} USDT`;
+      return number(n, n < 1 ? 8 : 2) + " USDT";
 
     }
 
@@ -222,101 +140,417 @@
 
       style: "currency",
 
-      currency: state.currency.toUpperCase(),
+      currency: currency.toUpperCase(),
 
-      maximumFractionDigits: number < 1 ? 8 : 2
+      maximumFractionDigits: n < 1 ? 8 : 2
 
-    }).format(number);
-
-  }
-
-  function formatPercentage(value) {
-
-    const number = Number(value);
-
-    if (!Number.isFinite(number)) {
-
-      return "Veri yok";
-
-    }
-
-    const sign = number > 0 ? "+" : "";
-
-    return `${sign}${formatNumber(number, 2)}%`;
+    }).format(n);
 
   }
 
-  function formatMarketCap(value) {
+  function percent(value) {
 
-    const number = Number(value);
+    const n = Number(value);
 
-    if (!Number.isFinite(number)) {
+    if (!Number.isFinite(n)) return "Veri yok";
 
-      return "Veri yok";
-
-    }
-
-    return formatNumber(number, 0);
+    return (n > 0 ? "+" : "") + number(n, 2) + "%";
 
   }
 
-  function changeClass(value) {
+  function signClass(value) {
 
-    const number = Number(value);
+    const n = Number(value);
 
-    if (!Number.isFinite(number)) {
+    if (!Number.isFinite(n) || n === 0) return "neutral";
 
-      return "neutral";
-
-    }
-
-    if (number > 0) {
-
-      return "positive";
-
-    }
-
-    if (number < 0) {
-
-      return "negative";
-
-    }
-
-    return "neutral";
+    return n > 0 ? "positive" : "negative";
 
   }
 
-  function createCell(text, className = "") {
+  async function request(url) {
+
+    const response = await fetch(url, {
+
+      method: "GET",
+
+      headers: { Accept: "application/json" }
+
+    });
+
+    if (!response.ok) {
+
+      if (response.status === 429) {
+
+        throw new Error("Veri kaynağının istek sınırına ulaşıldı. Biraz sonra tekrar deneyin.");
+
+      }
+
+      throw new Error("Veri kaynağı HTTP " + response.status + " hatası döndürdü.");
+
+    }
+
+    return response.json();
+
+  }
+
+  function coinById(id) {
+
+    return state.coins.find((coin) => coin.id === id);
+
+  }
+
+  function coinSymbol(coin) {
+
+    return String(coin?.symbol || "").toUpperCase();
+
+  }
+
+  function formatMarketValue(value) {
+
+    const n = Number(value);
+
+    if (!Number.isFinite(n)) return "Veri yok";
+
+    if (n >= 1e12) return number(n / 1e12, 2) + " trilyon";
+
+    if (n >= 1e9) return number(n / 1e9, 2) + " milyar";
+
+    if (n >= 1e6) return number(n / 1e6, 2) + " milyon";
+
+    return number(n, 0);
+
+  }
+
+  function setCurrencyNote() {
+
+    if (!el["currency-note"]) return;
+
+    if (state.currency === "usdt") {
+
+      el["currency-note"].textContent =
+
+        "USDT gösterimi spot fiyatlarda CoinGecko USD karşılığına dayanır; birebir USDT işlem fiyatı değildir. Vadeli piyasa verileri USDT veya sözleşme birimi cinsindendir.";
+
+    } else {
+
+      el["currency-note"].textContent =
+
+        "Spot fiyatlar seçilen para biriminde gösterilir. Vadeli sözleşme verileri kendi kotasyon biriminde sunulur.";
+
+    }
+
+  }
+
+  async function fetchSpotMarkets() {
+
+    const currency = state.currency === "usdt" ? "usd" : state.currency;
+
+    const params = new URLSearchParams({
+
+      vs_currency: currency,
+
+      order: "market_cap_desc",
+
+      per_page: String(CONFIG.marketLimit),
+
+      page: "1",
+
+      sparkline: "false",
+
+      price_change_percentage: "24h"
+
+    });
+
+    const data = await request(
+
+      CONFIG.coinGecko + "/coins/markets?" + params.toString()
+
+    );
+
+    if (!Array.isArray(data)) {
+
+      throw new Error("Piyasa verisi beklenen biçimde gelmedi.");
+
+    }
+
+    const found = new Set(data.map((coin) => coin.id));
+
+    const missing = CONFIG.pinned.filter((id) => !found.has(id));
+
+    if (missing.length) {
+
+      try {
+
+        const extra = await request(
+
+          CONFIG.coinGecko + "/coins/markets?" +
+
+          new URLSearchParams({
+
+            vs_currency: currency,
+
+            ids: missing.join(","),
+
+            order: "market_cap_desc",
+
+            per_page: String(missing.length),
+
+            page: "1",
+
+            sparkline: "false",
+
+            price_change_percentage: "24h"
+
+          }).toString()
+
+        );
+
+        if (Array.isArray(extra)) data.push(...extra);
+
+      } catch (_) {
+
+        // Ana piyasa verisi geldiyse ek coin isteğinin hatası engel değildir.
+
+      }
+
+    }
+
+    return data;
+
+  }
+
+  function renderBitcoin() {
+
+    const btc = coinById("bitcoin");
+
+    if (!btc) return;
+
+    if (el["btc-price"]) {
+
+      el["btc-price"].textContent = price(btc.current_price);
+
+    }
+
+    if (el["btc-change"]) {
+
+      el["btc-change"].textContent =
+
+        "24 saat: " + percent(btc.price_change_percentage_24h);
+
+      el["btc-change"].className =
+
+        "change-value " + signClass(btc.price_change_percentage_24h);
+
+    }
+
+    if (el["market-overview-message"]) {
+
+      el["market-overview-message"].textContent =
+
+        state.coins.length + " coin listelendi. Veriler son güncelleme zamanına aittir.";
+
+    }
+
+  }
+
+  function renderMarketTable() {
+
+    const body = el["market-table-body"];
+
+    if (!body) return;
+
+    let coins = [...state.filtered];
+
+    const sort = el["market-sort"]?.value || "market-cap";
+
+    if (sort === "change-desc") {
+
+      coins.sort((a, b) =>
+
+        (b.price_change_percentage_24h || 0) -
+
+        (a.price_change_percentage_24h || 0)
+
+      );
+
+    } else if (sort === "change-asc") {
+
+      coins.sort((a, b) =>
+
+        (a.price_change_percentage_24h || 0) -
+
+        (b.price_change_percentage_24h || 0)
+
+      );
+
+    } else if (sort === "volume") {
+
+      coins.sort((a, b) => (b.total_volume || 0) - (a.total_volume || 0));
+
+    } else {
+
+      coins.sort((a, b) => (a.market_cap_rank || 999999) - (b.market_cap_rank || 999999));
+
+    }
+
+    if (!coins.length) {
+
+      body.innerHTML = '<tr><td colspan="5">Aramanızla eşleşen coin bulunamadı.</td></tr>';
+
+      return;
+
+    }
+
+    const fragment = document.createDocumentFragment();
+
+    coins.forEach((coin) => {
+
+      const row = document.createElement("tr");
+
+      const nameCell = document.createElement("td");
+
+      const selectButton = document.createElement("button");
+
+      selectButton.type = "button";
+
+      selectButton.className = "coin-name-button";
+
+      selectButton.textContent =
+
+        coin.name + " (" + coinSymbol(coin) + ")";
+
+      selectButton.setAttribute(
+
+        "aria-label",
+
+        coin.name + " ayrıntılı analizini aç"
+
+      );
+
+      selectButton.addEventListener("click", () => {
+
+        openCoinAnalysis(coin.id);
+
+      });
+
+      nameCell.appendChild(selectButton);
+
+      row.appendChild(nameCell);
+
+      row.appendChild(makeCell(price(coin.current_price)));
+
+      row.appendChild(makeCell(
+
+        percent(coin.price_change_percentage_24h),
+
+        signClass(coin.price_change_percentage_24h)
+
+      ));
+
+      row.appendChild(makeCell(formatMarketValue(coin.market_cap)));
+
+      const actionCell = document.createElement("td");
+
+      const detailButton = document.createElement("button");
+
+      detailButton.type = "button";
+
+      detailButton.textContent = "Analiz et";
+
+      detailButton.setAttribute("aria-label", coin.name + " analiz et");
+
+      detailButton.addEventListener("click", () => openCoinAnalysis(coin.id));
+
+      actionCell.appendChild(detailButton);
+
+      row.appendChild(actionCell);
+
+      fragment.appendChild(row);
+
+    });
+
+    body.replaceChildren(fragment);
+
+  }
+
+  function makeCell(text, className = "") {
 
     const cell = document.createElement("td");
 
     cell.textContent = text;
 
-    if (className) {
-
-      cell.className = className;
-
-    }
+    if (className) cell.className = className;
 
     return cell;
 
   }
 
-  function createMessageRow(tableBody, message, columnCount) {
+  function searchCoins() {
 
-    if (!tableBody) return;
+    const query = (el["coin-search"]?.value || "")
 
-    const row = document.createElement("tr");
+      .trim().toLocaleLowerCase("tr-TR");
 
-    const cell = document.createElement("td");
+    state.filtered = state.coins.filter((coin) => {
 
-    cell.colSpan = columnCount;
+      if (!query) return true;
 
-    cell.textContent = message;
+      return (
 
-    row.appendChild(cell);
+        String(coin.name).toLocaleLowerCase("tr-TR").includes(query) ||
 
-    tableBody.replaceChildren(row);
+        coinSymbol(coin).toLocaleLowerCase("tr-TR").includes(query) ||
+
+        String(coin.id).toLocaleLowerCase("tr-TR").includes(query)
+
+      );
+
+    });
+
+    renderMarketTable();
+
+    message("market-message", state.filtered.length + " coin bulundu.");
+
+  }
+
+  function fillAnalysisOptions() {
+
+    const select = el["analysis-coin"];
+
+    if (!select) return;
+
+    const previous = state.selectedCoin || select.value;
+
+    const fragment = document.createDocumentFragment();
+
+    const first = document.createElement("option");
+
+    first.value = "";
+
+    first.textContent = "Coin seçin";
+
+    fragment.appendChild(first);
+
+    state.coins.forEach((coin) => {
+
+      const option = document.createElement("option");
+
+      option.value = coin.id;
+
+      option.textContent = coin.name + " (" + coinSymbol(coin) + ")";
+
+      fragment.appendChild(option);
+
+    });
+
+    select.replaceChildren(fragment);
+
+    if (previous && coinById(previous)) {
+
+      select.value = previous;
+
+    }
 
   }
 
@@ -324,17 +558,11 @@
 
     try {
 
-      localStorage.setItem(
+      localStorage.setItem(CONFIG.watchlistKey, JSON.stringify(state.watchlist));
 
-        CONFIG.watchlistStorageKey,
+    } catch (_) {
 
-        JSON.stringify(state.watchlist)
-
-      );
-
-    } catch (error) {
-
-      announce("İzleme listesi cihazınıza kaydedilemedi.");
+      message("watchlist-message", "Takip listesi cihazınıza kaydedilemedi.", "error-message");
 
     }
 
@@ -344,21 +572,15 @@
 
     try {
 
-      const saved = localStorage.getItem(
+      const value = JSON.parse(localStorage.getItem(CONFIG.watchlistKey) || "[]");
 
-        CONFIG.watchlistStorageKey
+      state.watchlist = Array.isArray(value)
 
-      );
-
-      const parsed = saved ? JSON.parse(saved) : [];
-
-      state.watchlist = Array.isArray(parsed)
-
-        ? parsed.filter((item) => typeof item === "string")
+        ? value.filter((id) => typeof id === "string")
 
         : [];
 
-    } catch (error) {
+    } catch (_) {
 
       state.watchlist = [];
 
@@ -366,580 +588,95 @@
 
   }
 
-  async function apiRequest(endpoint) {
-
-    const response = await fetch(
-
-      `${CONFIG.apiBase}${endpoint}`,
-
-      {
-
-        method: "GET",
-
-        headers: {
-
-          Accept: "application/json"
-
-        }
-
-      }
-
-    );
-
-    if (!response.ok) {
-
-      if (response.status === 429) {
-
-        throw new Error(
-
-          "Ücretsiz API istek sınırına ulaşıldı. Biraz sonra tekrar deneyin."
-
-        );
-
-      }
-
-      if (response.status === 404) {
-
-        throw new Error("İstenen piyasa verisi bulunamadı.");
-
-      }
-
-      throw new Error(
-
-        `Veri sunucusu HTTP ${response.status} hatası döndürdü.`
-
-      );
-
-    }
-
-    return response.json();
-
-  }
-
-  async function fetchMarketData() {
-
-    if (state.loading) return;
-
-    state.loading = true;
-
-    if (elements["refresh-button"]) {
-
-      elements["refresh-button"].disabled = true;
-
-    }
-
-    announce("Piyasa verileri yükleniyor.");
-
-    setMessage("Piyasa verileri alınıyor.");
-
-    try {
-
-      const currency = state.currency === "usdt"
-
-        ? "usd"
-
-        : state.currency;
-
-      const params = new URLSearchParams({
-
-        vs_currency: currency,
-
-        order: "market_cap_desc",
-
-        per_page: String(CONFIG.marketPageSize),
-
-        page: "1",
-
-        sparkline: "false",
-
-        price_change_percentage: "24h"
-
-      });
-
-      const data = await apiRequest(
-
-        `/coins/markets?${params.toString()}`
-
-      );
-
-      if (!Array.isArray(data)) {
-
-        throw new Error("Sunucudan geçersiz veri alındı.");
-
-      }
-
-      const existingIds = new Set(
-
-        data.map((coin) => coin.id)
-
-      );
-
-      const missingPinned = CONFIG.pinnedCoins.filter(
-
-        (id) => !existingIds.has(id)
-
-      );
-
-      if (missingPinned.length > 0) {
-
-        try {
-
-          const pinnedParams = new URLSearchParams({
-
-            vs_currency: currency,
-
-            ids: missingPinned.join(","),
-
-            order: "market_cap_desc",
-
-            per_page: String(missingPinned.length),
-
-            page: "1",
-
-            sparkline: "false",
-
-            price_change_percentage: "24h"
-
-          });
-
-          const pinnedData = await apiRequest(
-
-            `/coins/markets?${pinnedParams.toString()}`
-
-          );
-
-          if (Array.isArray(pinnedData)) {
-
-            data.push(...pinnedData);
-
-          }
-
-        } catch (pinnedError) {
-
-          /*
-
-           * İlk piyasa isteği başarılıysa ikinci istek başarısız
-
-           * olduğunda mevcut piyasa verileri kullanılmaya devam eder.
-
-           */
-
-        }
-
-      }
-
-      state.coins = data;
-
-      state.filteredCoins = [...data];
-
-      state.lastUpdated = new Date();
-
-      renderMarketTable();
-
-      renderSummaryCards();
-
-      renderAnalysisCoinOptions();
-
-      renderWatchlist();
-
-      setMessage(
-
-        `${data.length} coin için piyasa verileri güncellendi.`
-
-      );
-
-      if (elements["last-updated"]) {
-
-        elements["last-updated"].textContent =
-
-          `Son güncelleme: ${state.lastUpdated.toLocaleTimeString("tr-TR")}`;
-
-      }
-
-      announce(
-
-        `${data.length} coin için piyasa verileri güncellendi.`
-
-      );
-
-    } catch (error) {
-
-      const message =
-
-        error.message || "Bilinmeyen bir hata oluştu.";
-
-      setMessage(`Hata: ${message}`);
-
-      announce(`Piyasa verileri alınamadı. ${message}`);
-
-      if (state.coins.length === 0) {
-
-        createMessageRow(
-
-          elements["market-table-body"],
-
-          "Piyasa verileri alınamadı. İnternet bağlantınızı kontrol edip tekrar deneyin.",
-
-          4
-
-        );
-
-      }
-
-    } finally {
-
-      state.loading = false;
-
-      if (elements["refresh-button"]) {
-
-        elements["refresh-button"].disabled = false;
-
-      }
-
-    }
-
-  }
-
-  function renderSummaryCards() {
-
-    const summaries = [
-
-      {
-
-        id: "bitcoin",
-
-        priceElement: elements["btc-price"],
-
-        changeElement: elements["btc-change"]
-
-      },
-
-      {
-
-        id: "ethereum",
-
-        priceElement: elements["eth-price"],
-
-        changeElement: elements["eth-change"]
-
-      },
-
-      {
-
-        id: "solana",
-
-        priceElement: elements["sol-price"],
-
-        changeElement: elements["sol-change"]
-
-      }
-
-    ];
-
-    summaries.forEach((item) => {
-
-      const coin = state.coins.find(
-
-        (entry) => entry.id === item.id
-
-      );
-
-      if (!coin) return;
-
-      if (item.priceElement) {
-
-        item.priceElement.textContent =
-
-          formatPrice(coin.current_price);
-
-      }
-
-      if (item.changeElement) {
-
-        item.changeElement.textContent =
-
-          formatPercentage(coin.price_change_percentage_24h);
-
-        item.changeElement.className =
-
-          changeClass(coin.price_change_percentage_24h);
-
-      }
-
-    });
-
-  }
-
-  function renderMarketTable() {
-
-    const tableBody = elements["market-table-body"];
-
-    if (!tableBody) return;
-
-    if (state.filteredCoins.length === 0) {
-
-      createMessageRow(
-
-        tableBody,
-
-        "Aramanızla eşleşen coin bulunamadı.",
-
-        4
-
-      );
-
-      return;
-
-    }
-
-    const fragment = document.createDocumentFragment();
-
-    state.filteredCoins.forEach((coin) => {
-
-      const row = document.createElement("tr");
-
-      const name = `${coin.name} (${String(
-
-        coin.symbol || ""
-
-      ).toUpperCase()})`;
-
-      row.appendChild(createCell(name));
-
-      row.appendChild(createCell(formatPrice(coin.current_price)));
-
-      row.appendChild(
-
-        createCell(
-
-          formatPercentage(coin.price_change_percentage_24h),
-
-          changeClass(coin.price_change_percentage_24h)
-
-        )
-
-      );
-
-      row.appendChild(
-
-        createCell(formatMarketCap(coin.market_cap))
-
-      );
-
-      fragment.appendChild(row);
-
-    });
-
-    tableBody.replaceChildren(fragment);
-
-  }
-
-  function searchCoins() {
-
-    const query = elements["coin-search"]
-
-      ? elements["coin-search"].value.trim().toLocaleLowerCase("tr-TR")
-
-      : "";
-
-    if (!query) {
-
-      state.filteredCoins = [...state.coins];
-
-    } else {
-
-      state.filteredCoins = state.coins.filter((coin) => {
-         const name = String(coin.name || "")
-
-          .toLocaleLowerCase("tr-TR");
-
-        const symbol = String(coin.symbol || "")
-
-          .toLocaleLowerCase("tr-TR");
-
-        const id = String(coin.id || "")
-
-          .toLocaleLowerCase("tr-TR");
-
-        return (
-
-          name.includes(query) ||
-
-          symbol.includes(query) ||
-
-          id.includes(query)
-
-        );
-
-      });
-
-    }
-
-    renderMarketTable();
-
-    announce(
-
-      `Arama tamamlandı. ${state.filteredCoins.length} coin bulundu.`
-
-    );
-
-  }
-
-  function renderAnalysisCoinOptions() {
-
-    const select = elements["analysis-coin"];
-
-    if (!select) return;
-
-    const previousValue = select.value;
-
-    const fragment = document.createDocumentFragment();
-
-    const defaultOption = document.createElement("option");
-
-    defaultOption.value = "";
-
-    defaultOption.textContent = "Coin seçin";
-
-    fragment.appendChild(defaultOption);
-
-    state.coins.forEach((coin) => {
-
-      const option = document.createElement("option");
-
-      option.value = coin.id;
-
-      option.textContent =
-
-        `${coin.name} (${String(coin.symbol).toUpperCase()})`;
-
-      fragment.appendChild(option);
-
-    });
-
-    select.replaceChildren(fragment);
-
-    if (
-
-      previousValue &&
-
-      state.coins.some((coin) => coin.id === previousValue)
-
-    ) {
-
-      select.value = previousValue;
-
-    }
-
-  }
-
   function renderWatchlist() {
 
-    const container = elements["watchlist-items"];
+    const list = el["watchlist-items"];
 
-    if (!container) return;
+    if (!list) return;
 
-    container.replaceChildren();
+    list.replaceChildren();
 
-    if (state.watchlist.length === 0) {
+    if (!state.watchlist.length) {
 
-      const message = document.createElement("p");
+      const item = document.createElement("li");
 
-      message.textContent = "İzleme listeniz henüz boş.";
+      item.textContent = "Takip listeniz henüz boş.";
 
-      message.className = "empty-message";
-
-      container.appendChild(message);
+      list.appendChild(item);
 
       return;
 
     }
 
-    state.watchlist.forEach((coinId) => {
+    state.watchlist.forEach((id) => {
 
-      const coin = state.coins.find(
+      const coin = coinById(id);
 
-        (item) => item.id === coinId
+      const item = document.createElement("li");
 
-      );
+      const wrapper = document.createElement("div");
 
-      const item = document.createElement("div");
-
-      item.className = "project-item";
+      wrapper.className = "watchlist-item";
 
       const label = document.createElement("span");
 
       label.textContent = coin
 
-        ? `${coin.name} (${String(coin.symbol).toUpperCase()})`
+        ? coin.name + " (" + coinSymbol(coin) + ")"
 
-        : coinId;
+        : id;
 
-      const removeButton = document.createElement("button");
+      const remove = document.createElement("button");
 
-      removeButton.type = "button";
+      remove.type = "button";
 
-      removeButton.textContent = "Listeden çıkar";
+      remove.textContent = "Listeden çıkar";
 
-      removeButton.setAttribute(
+      remove.setAttribute("aria-label", label.textContent + " listesinden çıkar");
 
-        "aria-label",
+      remove.addEventListener("click", () => {
 
-        `${label.textContent} izleme listesinden çıkar`
+        state.watchlist = state.watchlist.filter((itemId) => itemId !== id);
 
-      );
+        saveWatchlist();
 
-      removeButton.addEventListener("click", () => {
+        renderWatchlist();
 
-        removeFromWatchlist(coinId);
+        message("watchlist-message", "Coin takip listenizden çıkarıldı.");
 
       });
 
-      item.append(label, removeButton);
+      wrapper.append(label, remove);
 
-      container.appendChild(item);
+      item.appendChild(wrapper);
+
+      list.appendChild(item);
 
     });
 
   }
 
-  function addToWatchlist() {
+  function addWatchlist() {
 
-    const input = elements["watchlist-coin"];
+    const input = el["watchlist-coin"];
 
-    if (!input) return;
+    const query = (input?.value || "").trim().toLocaleLowerCase("tr-TR");
 
-    const query = input.value.trim().toLocaleLowerCase("tr-TR");
+    if (!query) return;
 
-    if (!query) {
+    const coin = state.coins.find((item) =>
 
-      announce("Lütfen izleme listesine eklemek için bir coin girin.");
+      item.id.toLocaleLowerCase("tr-TR") === query ||
 
-      return;
+      item.name.toLocaleLowerCase("tr-TR") === query ||
 
-    }
+      coinSymbol(item).toLocaleLowerCase("tr-TR") === query
 
-    const coin = state.coins.find((item) => {
-
-      return (
-
-        item.id.toLocaleLowerCase("tr-TR") === query ||
-
-        item.symbol.toLocaleLowerCase("tr-TR") === query ||
-
-        item.name.toLocaleLowerCase("tr-TR") === query
-
-      );
-
-    });
+    );
 
     if (!coin) {
 
-      announce(
-
-        "Coin bulunamadı. Coin adını, sembolünü veya kimliğini kontrol edin."
-
-      );
+      message("watchlist-message", "Coin bulunamadı. Önce piyasa listesinden verilerin yüklenmesini bekleyin.", "error-message");
 
       return;
 
@@ -947,7 +684,7 @@
 
     if (state.watchlist.includes(coin.id)) {
 
-      announce("Bu coin zaten izleme listenizde.");
+      message("watchlist-message", "Bu coin zaten takip listenizde.");
 
       return;
 
@@ -961,51 +698,31 @@
 
     input.value = "";
 
-    announce(`${coin.name} izleme listenize eklendi.`);
+    message("watchlist-message", coin.name + " takip listenize eklendi.", "success-message");
 
   }
 
-  function removeFromWatchlist(coinId) {
+  function average(values) {
 
-    state.watchlist = state.watchlist.filter(
+    if (!values.length) return null;
 
-      (id) => id !== coinId
-
-    );
-
-    saveWatchlist();
-
-    renderWatchlist();
-
-    announce("Coin izleme listenizden çıkarıldı.");
+    return values.reduce((sum, value) => sum + value, 0) / values.length;
 
   }
 
-  function calculateEMA(values, period) {
+  function ema(values, period) {
 
-    if (!Array.isArray(values) || values.length < period) {
-
-      return [];
-
-    }
+    if (values.length < period) return [];
 
     const multiplier = 2 / (period + 1);
 
-    const result = [];
+    let previous = average(values.slice(0, period));
 
-    let previous = values
+    const result = [previous];
 
-      .slice(0, period)
+    for (let i = period; i < values.length; i++) {
 
-      .reduce((sum, value) => sum + value, 0) / period;
-
-    result.push(previous);
-
-    for (let i = period; i < values.length; i += 1) {
-
-      previous =
-
-        (values[i] - previous) * multiplier + previous;
+      previous = (values[i] - previous) * multiplier + previous;
 
       result.push(previous);
 
@@ -1015,309 +732,533 @@
 
   }
 
-  function calculateRSI(values, period = 14) {
+  function sma(values, period) {
 
-    if (!Array.isArray(values) || values.length <= period) {
+    if (values.length < period) return null;
 
-      return null;
+    return average(values.slice(-period));
 
-    }
+  }
+
+  function rsi(values, period = 14) {
+
+    if (values.length <= period) return null;
 
     let gains = 0;
 
     let losses = 0;
 
-    for (let i = 1; i <= period; i += 1) {
+    for (let i = 1; i <= period; i++) {
 
-      const difference = values[i] - values[i - 1];
+      const diff = values[i] - values[i - 1];
 
-      if (difference > 0) {
+      if (diff > 0) gains += diff;
 
-        gains += difference;
+      else losses += Math.abs(diff);
+
+    }
+
+    let avgGain = gains / period;
+
+    let avgLoss = losses / period;
+
+    for (let i = period + 1; i < values.length; i++) {
+
+      const diff = values[i] - values[i - 1];
+
+      avgGain = (avgGain * (period - 1) + Math.max(diff, 0)) / period;
+
+      avgLoss = (avgLoss * (period - 1) + Math.max(-diff, 0)) / period;
+
+    }
+
+    if (avgLoss === 0) return 100;
+
+    return 100 - 100 / (1 + avgGain / avgLoss);
+
+  }
+
+  function macd(values) {
+
+    const fast = ema(values, 12);
+
+    const slow = ema(values, 26);
+
+    if (!fast.length || !slow.length) return null;
+
+    const offset = fast.length - slow.length;
+
+    const line = slow.map((value, index) => fast[index + offset] - value);
+
+    const signalLine = ema(line, 9);
+
+    if (!signalLine.length) return null;
+
+    const lineValue = line[line.length - 1];
+
+    const signalValue = signalLine[signalLine.length - 1];
+
+    return {
+
+      line: lineValue,
+
+      signal: signalValue,
+
+      histogram: lineValue - signalValue
+
+    };
+
+  }
+
+  function bollinger(values, period = 20) {
+
+    if (values.length < period) return null;
+
+    const sample = values.slice(-period);
+
+    const mid = average(sample);
+
+    const variance = average(sample.map((v) => Math.pow(v - mid, 2)));
+
+    const deviation = Math.sqrt(variance);
+
+    return {
+
+      upper: mid + deviation * 2,
+
+      middle: mid,
+
+      lower: mid - deviation * 2
+
+    };
+
+  }
+
+  function atr(candles, period = 14) {
+
+    if (candles.length <= period) return null;
+
+    const ranges = [];
+
+    for (let i = 1; i < candles.length; i++) {
+
+      const current = candles[i];
+
+      const previous = candles[i - 1];
+
+      ranges.push(Math.max(
+
+        current.high - current.low,
+
+        Math.abs(current.high - previous.close),
+
+        Math.abs(current.low - previous.close)
+
+      ));
+
+    }
+
+    return average(ranges.slice(-period));
+
+  }
+
+  function adx(candles, period = 14) {
+
+    if (candles.length <= period + 1) return null;
+
+    const plus = [];
+
+    const minus = [];
+
+    const tr = [];
+
+    for (let i = 1; i < candles.length; i++) {
+
+      const current = candles[i];
+
+      const previous = candles[i - 1];
+
+      const up = current.high - previous.high;
+
+      const down = previous.low - current.low;
+
+      plus.push(up > down && up > 0 ? up : 0);
+
+      minus.push(down > up && down > 0 ? down : 0);
+
+      tr.push(Math.max(
+
+        current.high - current.low,
+
+        Math.abs(current.high - previous.close),
+
+        Math.abs(current.low - previous.close)
+
+      ));
+
+    }
+
+    const trSum = tr.slice(-period).reduce((a, b) => a + b, 0);
+
+    if (!trSum) return null;
+
+    const plusDI = 100 * plus.slice(-period).reduce((a, b) => a + b, 0) / trSum;
+
+    const minusDI = 100 * minus.slice(-period).reduce((a, b) => a + b, 0) / trSum;
+
+    if (plusDI + minusDI === 0) return 0;
+
+    return 100 * Math.abs(plusDI - minusDI) / (plusDI + minusDI);
+
+  }
+
+  function vwap(candles) {
+
+    let numerator = 0;
+
+    let denominator = 0;
+
+    candles.slice(-20).forEach((candle) => {
+
+      const typical = (candle.high + candle.low + candle.close) / 3;
+
+      numerator += typical * candle.volume;
+
+      denominator += candle.volume;
+
+    });
+
+    return denominator ? numerator / denominator : null;
+
+  }
+
+  function calculateIndicators(candles) {
+
+    const closes = candles.map((c) => c.close);
+
+    const last = closes[closes.length - 1];
+
+    const ema20 = ema(closes, 20);
+
+    const ema50 = ema(closes, 50);
+
+    const ema100 = ema(closes, 100);
+
+    const ema200 = ema(closes, 200);
+
+    const bands = bollinger(closes);
+
+    const macdValue = macd(closes);
+
+    const atrValue = atr(candles);
+
+    return {
+
+      last,
+
+      rsi: rsi(closes),
+
+      ema20: ema20.at(-1) ?? null,
+
+      ema50: ema50.at(-1) ?? null,
+
+      ema100: ema100.at(-1) ?? null,
+
+      ema200: ema200.at(-1) ?? null,
+
+      sma50: sma(closes, 50),
+
+      sma200: sma(closes, 200),
+
+      macd: macdValue,
+
+      bollinger: bands,
+
+      atr: atrValue,
+
+      adx: adx(candles),
+
+      vwap: vwap(candles),
+
+      volume: candles.at(-1)?.volume ?? null,
+
+      averageVolume: average(candles.slice(-20).map((c) => c.volume)),
+
+      support: Math.min(...candles.slice(-20).map((c) => c.low)),
+
+      resistance: Math.max(...candles.slice(-20).map((c) => c.high))
+
+    };
+
+  }
+
+  function evaluateSignal(indicators) {
+
+    let score = 0;
+
+    const reasons = [];
+
+    if (indicators.rsi !== null) {
+
+      if (indicators.rsi < 30) {
+
+        score += 1;
+
+        reasons.push("RSI aşırı satım bölgesinde");
+
+      } else if (indicators.rsi > 70) {
+
+        score -= 1;
+
+        reasons.push("RSI aşırı alım bölgesinde");
+
+      } else if (indicators.rsi >= 50) {
+
+        score += 0.5;
+
+        reasons.push("RSI pozitif bölgede");
 
       } else {
 
-        losses += Math.abs(difference);
+        score -= 0.5;
+
+        reasons.push("RSI negatif bölgede");
 
       }
 
     }
 
-    let averageGain = gains / period;
+    if (indicators.ema20 !== null && indicators.ema50 !== null) {
 
-    let averageLoss = losses / period;
+      if (indicators.ema20 > indicators.ema50) {
 
-    for (let i = period + 1; i < values.length; i += 1) {
+        score += 1;
 
-      const difference = values[i] - values[i - 1];
+        reasons.push("EMA 20, EMA 50 üzerinde");
 
-      const gain = Math.max(difference, 0);
+      } else {
 
-      const loss = Math.max(-difference, 0);
+        score -= 1;
 
-      averageGain =
+        reasons.push("EMA 20, EMA 50 altında");
 
-        ((averageGain * (period - 1)) + gain) / period;
-
-      averageLoss =
-
-        ((averageLoss * (period - 1)) + loss) / period;
+      }
 
     }
 
-    if (averageLoss === 0) {
+    if (indicators.macd) {
 
-      return 100;
+      if (indicators.macd.histogram > 0) {
 
-    }
+        score += 1;
 
-    const relativeStrength = averageGain / averageLoss;
+        reasons.push("MACD histogramı pozitif");
 
-    return 100 - (100 / (1 + relativeStrength));
+      } else {
 
-  }
+        score -= 1;
 
-  function calculateMACD(values) {
+        reasons.push("MACD histogramı negatif");
 
-    const shortEMA = calculateEMA(values, 12);
-
-    const longEMA = calculateEMA(values, 26);
-
-    if (shortEMA.length === 0 || longEMA.length === 0) {
-
-      return null;
+      }
 
     }
 
-    const difference = shortEMA.length - longEMA.length;
+    if (indicators.last !== null && indicators.vwap !== null) {
 
-    const macdValues = [];
+      if (indicators.last > indicators.vwap) {
 
-    for (let i = 0; i < longEMA.length; i += 1) {
+        score += 0.5;
 
-      macdValues.push(
+        reasons.push("Fiyat VWAP üzerinde");
 
-        shortEMA[i + difference] - longEMA[i]
+      } else {
 
-      );
+        score -= 0.5;
+
+        reasons.push("Fiyat VWAP altında");
+
+      }
 
     }
 
-    const signalValues = calculateEMA(macdValues, 9);
+    let signal = "TUT";
 
-    if (signalValues.length === 0) {
+    if (score >= 2.5) signal = "GÜÇLÜ AL";
 
-      return null;
+    else if (score >= 1) signal = "AL";
+
+    else if (score <= -2.5) signal = "GÜÇLÜ SAT";
+
+    else if (score <= -1) signal = "SAT";
+
+    const atrPercent = indicators.atr && indicators.last
+
+      ? indicators.atr / indicators.last * 100
+
+      : null;
+
+    let risk = "Belirlenemedi";
+
+    if (atrPercent !== null) {
+
+      if (atrPercent < 2) risk = "Düşük";
+
+      else if (atrPercent < 5) risk = "Orta";
+
+      else risk = "Yüksek";
 
     }
 
     return {
 
-      macd: macdValues[macdValues.length - 1],
+      signal,
 
-      signal: signalValues[signalValues.length - 1],
+      score,
 
-      histogram:
+      alignment: Math.min(100, Math.round(Math.abs(score) / 4 * 100)),
 
-        macdValues[macdValues.length - 1] -
+      risk,
 
-        signalValues[signalValues.length - 1]
+      atrPercent,
 
-    };
-
-  }
-
-  function calculateBollingerBands(values, period = 20) {
-
-    if (!Array.isArray(values) || values.length < period) {
-
-      return null;
-
-    }
-
-    const sample = values.slice(-period);
-
-    const average =
-
-      sample.reduce((sum, value) => sum + value, 0) / period;
-
-    const variance =
-
-      sample.reduce(
-
-        (sum, value) => sum + Math.pow(value - average, 2),
-
-        0
-
-      ) / period;
-
-    const standardDeviation = Math.sqrt(variance);
-
-    return {
-
-      middle: average,
-
-      upper: average + (2 * standardDeviation),
-
-      lower: average - (2 * standardDeviation)
+      reasons
 
     };
 
   }
 
-  function describeRSI(value) {
+  function renderSignals() {
 
-    if (value === null) {
+    const body = el["signal-table-body"];
 
-      return "Yetersiz veri";
+    if (!body) return;
+
+    const filter = el["signal-filter"]?.value || "all";
+
+    const names = {
+
+      "GÜÇLÜ AL": "strong-buy",
+
+      "AL": "buy",
+
+      "TUT": "hold",
+
+      "SAT": "sell",
+
+      "GÜÇLÜ SAT": "strong-sell"
+
+    };
+
+    const filtered = state.signals.filter((item) =>
+
+      filter === "all" || names[item.signal] === filter
+
+    );
+
+    body.replaceChildren();
+
+    if (!filtered.length) {
+
+      body.innerHTML = '<tr><td colspan="5">Bu filtrede sinyal bulunamadı.</td></tr>';
+
+      return;
 
     }
 
-    if (value >= 70) {
+    filtered.forEach((item) => {
 
-      return "Aşırı alım bölgesi";
+      const row = document.createElement("tr");
 
-    }
+      row.appendChild(makeCell(item.name + " (" + item.symbol + ")"));
 
-    if (value <= 30) {
+      const signalCell = makeCell(item.signal);
 
-      return "Aşırı satım bölgesi";
+      signalCell.className = "signal-label " +
 
-    }
+        (item.signal.includes("AL") ? "signal-buy" :
 
-    return "Nötr bölge";
+          item.signal.includes("SAT") ? "signal-sell" : "signal-hold");
+
+      row.appendChild(signalCell);
+
+      row.appendChild(makeCell("%" + item.alignment));
+
+      row.appendChild(makeCell(item.risk));
+
+      const actionCell = document.createElement("td");
+
+      const button = document.createElement("button");
+
+      button.type = "button";
+
+      button.textContent = "İncele";
+
+      button.setAttribute("aria-label", item.name + " sinyal ayrıntılarını incele");
+
+      button.addEventListener("click", () => openCoinAnalysis(item.id));
+
+      actionCell.appendChild(button);
+
+      row.appendChild(actionCell);
+
+      body.appendChild(row);
+
+    });
+
+    message("signal-message", filtered.length + " sinyal gösteriliyor.");
 
   }
 
-  function renderAnalysisResult(coin, indicators) {
+  function renderDetails(coin, indicators, evaluation, market, timeframe) {
 
-    const container = elements["technical-analysis-results"];
+    const detail = el["coin-detail"];
 
-    if (!container) return;
+    const results = el["technical-analysis-results"];
 
-    container.replaceChildren();
+    if (!detail || !results) return;
+
+    detail.replaceChildren();
+
+    results.replaceChildren();
 
     const heading = document.createElement("h3");
 
-    heading.textContent = `${coin.name} teknik analiz sonuçları`;
+    heading.textContent = coin.name + " (" + coinSymbol(coin) + ")";
 
-    container.appendChild(heading);
+    detail.appendChild(heading);
 
-    const entries = [
+    const grid = document.createElement("dl");
 
-      [
+    grid.className = "detail-grid";
 
-        "RSI (14)",
+    const details = [
 
-        indicators.rsi === null
+      ["Piyasa türü", marketName(market)],
 
-          ? "Yetersiz veri"
+      ["Zaman dilimi", timeframeName(timeframe)],
 
-          : `${formatNumber(indicators.rsi, 2)} - ${describeRSI(indicators.rsi)}`
+      ["Spot piyasa fiyatı", price(coin.current_price)],
 
-      ],
+      ["24 saatlik değişim", percent(coin.price_change_percentage_24h)],
 
-      [
+      ["Piyasa değeri", formatMarketValue(coin.market_cap)],
 
-        "EMA (20)",
+      ["24 saatlik hacim", formatMarketValue(coin.total_volume)],
 
-        indicators.ema20 === null
+      ["Teknik sinyal", evaluation.signal],
 
-          ? "Yetersiz veri"
+      ["Gösterge uyum puanı", "%" + evaluation.alignment],
 
-          : formatPrice(indicators.ema20)
-
-      ],
-
-      [
-
-        "EMA (50)",
-
-        indicators.ema50 === null
-
-          ? "Yetersiz veri"
-
-          : formatPrice(indicators.ema50)
-
-      ],
-
-      [
-
-        "MACD",
-
-        indicators.macd === null
-
-          ? "Yetersiz veri"
-
-          : formatNumber(indicators.macd.macd, 8)
-
-      ],
-
-      [
-
-        "MACD sinyal çizgisi",
-
-        indicators.macd === null
-
-          ? "Yetersiz veri"
-
-          : formatNumber(indicators.macd.signal, 8)
-
-      ],
-
-      [
-
-        "MACD histogramı",
-
-        indicators.macd === null
-
-          ? "Yetersiz veri"
-
-          : formatNumber(indicators.macd.histogram, 8)
-
-      ],
-
-      [
-
-        "Bollinger üst bandı",
-
-        indicators.bollinger === null
-
-          ? "Yetersiz veri"
-
-          : formatPrice(indicators.bollinger.upper)
-
-      ],
-
-      [
-
-        "Bollinger orta bandı",
-
-        indicators.bollinger === null
-
-          ? "Yetersiz veri"
-
-          : formatPrice(indicators.bollinger.middle)
-
-      ],
-
-      [
-
-        "Bollinger alt bandı",
-
-        indicators.bollinger === null
-
-          ? "Yetersiz veri"
-
-          : formatPrice(indicators.bollinger.lower)
-
-      ]
+      ["Risk seviyesi", evaluation.risk]
 
     ];
 
-    const list = document.createElement("dl");
+    details.forEach(([label, value]) => {
 
-    entries.forEach(([label, value]) => {
+      const wrapper = document.createElement("div");
+
+      wrapper.className = "detail-item";
 
       const term = document.createElement("dt");
 
@@ -1327,49 +1268,309 @@
 
       description.textContent = value;
 
-      list.append(term, description);
+      wrapper.append(term, description);
+
+      grid.appendChild(wrapper);
 
     });
 
-    container.appendChild(list);
+    detail.appendChild(grid);
+
+    const title = document.createElement("h3");
+
+    title.textContent = "Teknik göstergeler";
+
+    results.appendChild(title);
+
+    const list = document.createElement("ul");
+
+    list.className = "indicator-list";
+
+    const entries = [
+
+      ["RSI (14)", indicators.rsi === null ? "Yetersiz veri" : number(indicators.rsi) ],
+
+      ["EMA 20", price(indicators.ema20)],
+
+      ["EMA 50", price(indicators.ema50)],
+
+      ["EMA 100", price(indicators.ema100)],
+
+      ["EMA 200", price(indicators.ema200)],
+
+      ["SMA 50", price(indicators.sma50)],
+
+      ["SMA 200", price(indicators.sma200)],
+
+      ["MACD", indicators.macd ? number(indicators.macd.line, 8) : "Yetersiz veri"],
+
+      ["MACD sinyal", indicators.macd ? number(indicators.macd.signal, 8) : "Yetersiz veri"],
+
+      ["MACD histogramı", indicators.macd ? number(indicators.macd.histogram, 8) : "Yetersiz veri"],
+
+      ["Bollinger üst", indicators.bollinger ? price(indicators.bollinger.upper) : "Yetersiz veri"],
+
+      ["Bollinger orta", indicators.bollinger ? price(indicators.bollinger.middle) : "Yetersiz veri"],
+
+      ["Bollinger alt", indicators.bollinger ? price(indicators.bollinger.lower) : "Yetersiz veri"],
+
+      ["ATR (14)", indicators.atr === null ? "Yetersiz veri" : number(indicators.atr, 8)],
+
+      ["ADX", indicators.adx === null ? "Yetersiz veri" : number(indicators.adx)],
+
+      ["VWAP", price(indicators.vwap)],
+
+      ["Son mum hacmi", number(indicators.volume, 4)],
+
+      ["20 mum ortalama hacim", number(indicators.averageVolume, 4)],
+
+      ["Destek seviyesi", price(indicators.support)],
+
+      ["Direnç seviyesi", price(indicators.resistance)]
+
+    ];
+
+    entries.forEach(([label, value]) => {
+
+      const item = document.createElement("li");
+
+      item.textContent = label + ": " + value;
+
+      list.appendChild(item);
+
+    });
+
+    results.appendChild(list);
+
+    const signalHeading = document.createElement("h3");
+
+    signalHeading.textContent = "Sinyal gerekçeleri";
+
+    results.appendChild(signalHeading);
+
+    const reasonList = document.createElement("ul");
+
+    evaluation.reasons.forEach((reason) => {
+
+      const item = document.createElement("li");
+
+      item.textContent = reason;
+
+      reasonList.appendChild(item);
+
+    });
+
+    if (!evaluation.reasons.length) {
+
+      const item = document.createElement("li");
+
+      item.textContent = "Yeterli gösterge verisi bulunamadı.";
+
+      reasonList.appendChild(item);
+
+    }
+
+    results.appendChild(reasonList);
+
+    const riskText = document.createElement("p");
+
+    riskText.textContent =
+
+      "ATR tabanlı volatilite: " +
+
+      (evaluation.atrPercent === null
+
+        ? "Hesaplanamadı."
+
+        : "%" + number(evaluation.atrPercent));
+
+    results.appendChild(riskText);
 
     const disclaimer = document.createElement("p");
 
-    disclaimer.className = "info-text";
+    disclaimer.className = "notice";
 
     disclaimer.textContent =
 
-      "Bu göstergeler geçmiş fiyat verilerine dayanır. Tek başına yatırım kararı vermek için kullanılmamalıdır.";
+      "Gösterge uyum puanı istatistiksel başarı olasılığı değildir. Destek ve direnç, son 20 mumun en düşük ve en yüksek değerlerinden hesaplanmıştır. Bu veriler yatırım tavsiyesi değildir.";
 
-    container.appendChild(disclaimer);
+    results.appendChild(disclaimer);
 
   }
 
-  async function runTechnicalAnalysis() {
+  function marketName(value) {
 
-    const select = elements["analysis-coin"];
+    return value === "usdt-m" ? "USDT-M Vadeli" :
 
-    if (!select || !select.value) {
+      value === "coin-m" ? "COIN-M Vadeli" : "Spot";
 
-      announce("Teknik analiz için önce bir coin seçin.");
+  }
+
+  function timeframeName(value) {
+
+    const names = {
+
+      "5m": "5 dakika", "15m": "15 dakika",
+
+      "1h": "1 saat", "4h": "4 saat",
+
+      "1d": "1 gün", "1w": "1 hafta"
+
+    };
+
+    return names[value] || value;
+
+  }
+
+  function binanceSymbol(coin) {
+
+    return coinSymbol(coin) + "USDT";
+
+  }
+
+  function coinMSymbol(coin) {
+
+    return coinSymbol(coin) + "USD_PERP";
+
+  }
+
+  async function fetchCandles(coin, market, timeframe) {
+
+    const limit = 250;
+
+    let url;
+
+    if (market === "usdt-m") {
+
+      url = CONFIG.binanceUsdt + "/fapi/v1/klines?" +
+
+        new URLSearchParams({
+
+          symbol: binanceSymbol(coin),
+
+          interval: timeframe,
+
+          limit: String(limit)
+
+        });
+
+    } else if (market === "coin-m") {
+
+      url = CONFIG.binanceCoin + "/dapi/v1/klines?" +
+
+        new URLSearchParams({
+
+          symbol: coinMSymbol(coin),
+
+          interval: timeframe,
+
+          limit: String(limit)
+
+        });
+
+    } else {
+
+      url = CONFIG.binanceSpot + "/api/v3/klines?" +
+
+        new URLSearchParams({
+
+          symbol: binanceSymbol(coin),
+
+          interval: timeframe,
+
+          limit: String(limit)
+
+        });
+
+    }
+
+    const raw = await request(url);
+
+    if (!Array.isArray(raw) || !raw.length) {
+
+      throw new Error("Bu coin ve piyasa için mum verisi bulunamadı.");
+
+    }
+
+    return raw.map((item) => ({
+
+      time: Number(item[0]),
+
+      open: Number(item[1]),
+
+      high: Number(item[2]),
+
+      low: Number(item[3]),
+
+      close: Number(item[4]),
+
+      volume: Number(item[5])
+
+    })).filter((item) =>
+
+      Number.isFinite(item.close) &&
+
+      Number.isFinite(item.high) &&
+
+      Number.isFinite(item.low)
+
+    );
+
+  }
+
+  async function openCoinAnalysis(id) {
+
+    const coin = coinById(id);
+
+    if (!coin) {
+
+      message("analysis-message", "Seçilen coin bulunamadı.", "error-message");
 
       return;
 
     }
 
+    state.selectedCoin = id;
+
+    if (el["analysis-coin"]) el["analysis-coin"].value = id;
+
+    const market = el["analysis-market"]?.value || state.market;
+
+    const timeframe = el["analysis-timeframe"]?.value || "1d";
+
+    if (el["analysis-market"]) el["analysis-market"].value = market;
+
+    if (el["market-type"]) el["market-type"].value = market;
+
+    $("analysis").scrollIntoView({ behavior: "smooth" });
+
+    await runAnalysis();
+
+  }
+
+  async function runAnalysis() {
+
     if (state.analysisLoading) return;
 
-    const coinId = select.value;
+    const id = el["analysis-coin"]?.value;
 
-    const coin = state.coins.find(
-
-      (item) => item.id === coinId
-
-    );
+    const coin = coinById(id);
 
     if (!coin) {
 
-      announce("Seçilen coin için piyasa verisi bulunamadı.");
+      message("analysis-message", "Önce analiz edilecek bir coin seçin.");
+
+      return;
+
+    }
+
+    const market = el["analysis-market"]?.value || "spot";
+
+    const timeframe = el["analysis-timeframe"]?.value || "1d";
+
+    if (!CONFIG.timeframes.includes(timeframe)) {
+
+      message("analysis-message", "Geçersiz zaman dilimi seçildi.", "error-message");
 
       return;
 
@@ -1377,95 +1578,79 @@
 
     state.analysisLoading = true;
 
-    state.selectedCoin = coinId;
+    message("analysis-message", coin.name + " için mum verileri alınıyor.");
 
-    const container = elements["technical-analysis-results"];
-
-    if (container) {
-
-      container.textContent = "Teknik analiz hesaplanıyor.";
-
-    }
-
-    announce(`${coin.name} için teknik analiz yapılıyor.`);
+    announce(coin.name + " teknik analizi hazırlanıyor.");
 
     try {
 
-      const currency = state.currency === "usdt"
+      const candles = await fetchCandles(coin, market, timeframe);
 
-        ? "usd"
+      if (candles.length < 30) {
 
-        : state.currency;
-
-      const params = new URLSearchParams({
-
-        vs_currency: currency,
-
-        days: "90",
-
-        interval: "daily"
-
-      });
-
-      const data = await apiRequest(
-
-        `/coins/${encodeURIComponent(coinId)}/market_chart?${params.toString()}`
-
-      );
-
-      if (!data || !Array.isArray(data.prices)) {
-
-        throw new Error("Geçmiş fiyat verileri alınamadı.");
+        throw new Error("Bu analiz için yeterli mum verisi bulunamadı.");
 
       }
 
-      const values = data.prices
+      const indicators = calculateIndicators(candles);
 
-        .map((entry) => Number(entry[1]))
+      const evaluation = evaluateSignal(indicators);
 
-        .filter((value) => Number.isFinite(value));
+      renderDetails(coin, indicators, evaluation, market, timeframe);
 
-      if (values.length < 50) {
+      message("analysis-message", coin.name + " analizi tamamlandı.", "success-message");
 
-        throw new Error(
+      announce(coin.name + " analizi tamamlandı. Sinyal: " + evaluation.signal);
 
-          "Teknik analiz için yeterli geçmiş fiyat verisi bulunamadı."
+      if (market === "spot" && timeframe === "1d") {
 
-        );
+        const existing = state.signals.find((item) => item.id === coin.id);
+
+        const signal = {
+
+          id: coin.id,
+
+          name: coin.name,
+
+          symbol: coinSymbol(coin),
+
+          signal: evaluation.signal,
+
+          alignment: evaluation.alignment,
+
+          risk: evaluation.risk
+
+        };
+
+        if (existing) {
+
+          state.signals = state.signals.map((item) =>
+
+            item.id === coin.id ? signal : item
+
+          );
+
+        } else {
+
+          state.signals.push(signal);
+
+        }
+
+        renderSignals();
 
       }
-
-      const indicators = {
-
-        rsi: calculateRSI(values, 14),
-
-        ema20: calculateEMA(values, 20).slice(-1)[0] ?? null,
-
-        ema50: calculateEMA(values, 50).slice(-1)[0] ?? null,
-
-        macd: calculateMACD(values),
-
-        bollinger: calculateBollingerBands(values, 20)
-
-      };
-
-      renderAnalysisResult(coin, indicators);
-
-      announce(`${coin.name} teknik analizi tamamlandı.`);
 
     } catch (error) {
 
-      const message =
+      message("analysis-message", error.message || "Analiz yapılamadı.", "error-message");
 
-        error.message || "Teknik analiz sırasında hata oluştu.";
+      if (el["technical-analysis-results"]) {
 
-      if (container) {
-
-        container.textContent = message;
+        el["technical-analysis-results"].textContent = error.message;
 
       }
 
-      announce(`Teknik analiz yapılamadı. ${message}`);
+      announce("Analiz yapılamadı. " + error.message);
 
     } finally {
 
@@ -1475,127 +1660,202 @@
 
   }
 
-  function renderSignalPlaceholder() {
+  async function buildInitialSignals() {
 
-    const tableBody = elements["signal-table-body"];
+    state.signals = [];
 
-    if (!tableBody) return;
+    const candidates = CONFIG.pinned
 
-    createMessageRow(
+      .map((id) => coinById(id))
 
-      tableBody,
+      .filter(Boolean);
 
-      "Henüz doğrulanmış işlem sinyali bulunmuyor. Teknik analiz bölümünden coin seçerek göstergeleri inceleyebilirsiniz.",
+    message("signal-message", "Öncelikli coinler analiz ediliyor.");
 
-      3
+    for (const coin of candidates) {
 
-    );
+      try {
+
+        const candles = await fetchCandles(coin, "spot", "1d");
+
+        if (candles.length < 30) continue;
+
+        const indicators = calculateIndicators(candles);
+
+        const evaluation = evaluateSignal(indicators);
+
+        state.signals.push({
+
+          id: coin.id,
+
+          name: coin.name,
+
+          symbol: coinSymbol(coin),
+
+          signal: evaluation.signal,
+
+          alignment: evaluation.alignment,
+
+          risk: evaluation.risk
+
+        });
+
+      } catch (_) {
+
+        // Bir coinin verisi alınamazsa diğer coinlerin analizi sürer.
+
+      }
+
+    }
+
+    renderSignals();
+
+    if (!state.signals.length) {
+
+      message("signal-message", "Şu anda otomatik sinyal üretmek için veri alınamadı.", "error-message");
+
+    } else {
+
+      message("signal-message", state.signals.length + " coin için günlük sinyal hesaplandı.");
+
+    }
+
+  }
+
+  async function loadMarkets() {
+
+    if (state.loading) return;
+
+    state.loading = true;
+
+    if (el["refresh-button"]) el["refresh-button"].disabled = true;
+
+    announce("Piyasa verileri yükleniyor.");
+
+    message("market-message", "Piyasa verileri alınıyor.");
+
+    try {
+
+      state.coins = await fetchSpotMarkets();
+
+      state.filtered = [...state.coins];
+
+      state.lastUpdated = new Date();
+
+      renderBitcoin();
+
+      renderMarketTable(); 
+      fillAnalysisOptions();
+
+      renderWatchlist();
+
+      setCurrencyNote();
+
+      if (el["last-updated"]) {
+
+        el["last-updated"].textContent =
+
+          "Son güncelleme: " + state.lastUpdated.toLocaleTimeString("tr-TR");
+
+      }
+
+      message("market-message", state.coins.length + " coin için spot piyasa verileri güncellendi.", "success-message");
+
+      announce("Piyasa verileri güncellendi.");
+
+      await buildInitialSignals();
+
+    } catch (error) {
+
+      message("market-message", error.message || "Piyasa verileri alınamadı.", "error-message");
+
+      announce("Piyasa verileri alınamadı. " + error.message);
+
+    } finally {
+
+      state.loading = false;
+
+      if (el["refresh-button"]) el["refresh-button"].disabled = false;
+
+    }
 
   }
 
   function bindEvents() {
 
-    if (elements["refresh-button"]) {
+    el["refresh-button"]?.addEventListener("click", loadMarkets);
 
-      elements["refresh-button"].addEventListener(
+    el["currency-select"]?.addEventListener("change", (event) => {
 
-        "click",
+      const value = event.target.value;
 
-        fetchMarketData
+      if (!["usd", "usdt", "try"].includes(value)) return;
 
-      );
+      state.currency = value;
 
-    }
+      loadMarkets();
 
-    if (elements["currency-select"]) {
+    });
 
-      elements["currency-select"].addEventListener(
+    el["market-type"]?.addEventListener("change", (event) => {
 
-        "change",
+      state.market = event.target.value;
 
-        (event) => {
+      if (el["analysis-market"]) {
 
-          const selected = event.target.value.toLowerCase();
-
-          if (!["usd", "usdt", "try"].includes(selected)) {
-
-            announce("Geçersiz para birimi seçildi.");
-
-            return;
-
-          }
-
-          state.currency = selected;
-
-          fetchMarketData();
-
-        }
-
-      );
-
-    }
-
-    if (elements["coin-search"]) {
-
-      elements["coin-search"].addEventListener(
-
-        "input",
-
-        searchCoins
-
-      );
-
-    }
-
-    if (elements["watchlist-form"]) {
-
-      elements["watchlist-form"].addEventListener(
-
-        "submit",
-
-        (event) => {
-
-          event.preventDefault();
-
-          addToWatchlist();
-
-        }
-
-      );
-
-    }
-
-    if (elements["analysis-coin"]) {
-
-      elements["analysis-coin"].addEventListener(
-
-        "change",
-
-        runTechnicalAnalysis
-
-      );
-
-    }
-
-  }
-
-  function startAutomaticRefresh() {
-
-    if (state.refreshTimer) {
-
-      window.clearInterval(state.refreshTimer);
-
-    }
-
-    state.refreshTimer = window.setInterval(() => {
-
-      if (!document.hidden) {
-
-        fetchMarketData();
+        el["analysis-market"].value = state.market;
 
       }
 
-    }, CONFIG.refreshInterval);
+      if (state.selectedCoin) runAnalysis();
+
+      else message("market-message", marketName(state.market) + " seçildi. Analiz için coin seçin.");
+
+    });
+
+    el["coin-search"]?.addEventListener("input", searchCoins);
+
+    el["market-sort"]?.addEventListener("change", renderMarketTable);
+
+    el["signal-filter"]?.addEventListener("change", renderSignals);
+
+    el["analysis-coin"]?.addEventListener("change", () => {
+
+      if (el["analysis-coin"].value) runAnalysis();
+
+    });
+
+    el["analysis-timeframe"]?.addEventListener("change", runAnalysis);
+
+    el["analysis-market"]?.addEventListener("change", (event) => {
+
+      state.market = event.target.value;
+
+      if (el["market-type"]) el["market-type"].value = state.market;
+
+      runAnalysis();
+
+    });
+
+    el["watchlist-form"]?.addEventListener("submit", (event) => {
+
+      event.preventDefault();
+
+      addWatchlist();
+
+    });
+
+  }
+
+  function startRefresh() {
+
+    if (state.refreshTimer) clearInterval(state.refreshTimer);
+
+    state.refreshTimer = setInterval(() => {
+
+      if (!document.hidden) loadMarkets();
+
+    }, CONFIG.refreshMs);
 
   }
 
@@ -1609,25 +1869,23 @@
 
     renderWatchlist();
 
-    renderSignalPlaceholder();
+    if (el["currency-select"]) {
 
-    if (elements["currency-select"]) {
-
-      const initialCurrency =
-
-        elements["currency-select"].value.toLowerCase();
-
-      if (["usd", "usdt", "try"].includes(initialCurrency)) {
-
-        state.currency = initialCurrency;
-
-      }
+      state.currency = el["currency-select"].value;
 
     }
 
-    fetchMarketData();
+    if (el["market-type"]) {
 
-    startAutomaticRefresh();
+      state.market = el["market-type"].value;
+
+    }
+
+    setCurrencyNote();
+
+    loadMarkets();
+
+    startRefresh();
 
     document.addEventListener("visibilitychange", () => {
 
