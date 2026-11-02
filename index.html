@@ -1,5 +1,3 @@
-
-
 <!DOCTYPE html>
 
 <html lang="tr">
@@ -8,11 +6,11 @@
 
   <meta charset="UTF-8">
 
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
 
-  <meta name="theme-color" content="#101827">
+  <meta name="theme-color" content="#101522">
 
-  <meta name="description" content="Erişilebilir Türkçe kripto para takip ve analiz platformu">
+  <meta name="description" content="Erişilebilir kripto para takip, teknik analiz ve piyasa sinyal platformu.">
 
   <title>Kripto Analiz Platformu</title>
 
@@ -36,13 +34,11 @@
 
     </div>
 
-    <div class="header-status">
+    <div class="header-tools">
 
-      <span id="connection-status" role="status" aria-live="polite">
+      <span id="connection-status" role="status" aria-live="polite">Veri bağlantısı bekleniyor</span>
 
-        Veri bağlantısı bekleniyor
-
-      </span>
+      <button id="refresh-button" type="button">Verileri yenile</button>
 
     </div>
 
@@ -56,7 +52,7 @@
 
     <a href="#signals">Sinyaller</a>
 
-    <a href="#analysis">Teknik Analiz</a>
+    <a href="#analysis">Coin Analizi</a>
 
     <a href="#watchlist">Takip Listem</a>
 
@@ -64,91 +60,135 @@
 
   <main id="main-content">
 
-    <section id="dashboard" class="section" aria-labelledby="dashboard-title">
+    <section id="dashboard" class="section">
 
-      <h2 id="dashboard-title">Piyasa Genel Bakış</h2>
+      <div class="section-heading">
 
-      <div class="toolbar">
+        <div>
 
-        <label for="currency-select">Gösterim para birimi</label>
+          <h2>Piyasa Genel Bakış</h2>
 
-        <select id="currency-select">
+          <p class="muted">Piyasanın temel görünümünü buradan takip edin.</p>
 
-          <option value="usd">ABD Doları (USD)</option>
-
-          <option value="try">Türk Lirası (TRY)</option>
-
-        </select>
-
-        <button id="refresh-button" type="button">
-
-          Verileri yenile
-
-        </button>
+        </div>
 
       </div>
 
-      <p id="last-updated" aria-live="polite">
+      <div class="toolbar">
 
-        Son güncelleme: Henüz güncellenmedi
+        <div class="form-field">
 
-      </p>
+          <label for="currency-select">Gösterim para birimi</label>
 
-      <div class="market-summary" aria-label="Öne çıkan kripto paralar">
+          <select id="currency-select">
 
-        <article class="summary-card">
+            <option value="usd">ABD Doları (USD)</option>
 
-          <h3>Bitcoin</h3>
+            <option value="usdt">Tether (USDT)</option>
 
-          <p id="btc-price">Veri bekleniyor</p>
+            <option value="try">Türk Lirası (TRY)</option>
 
-          <p id="btc-change">Değişim bekleniyor</p>
+          </select>
 
-        </article>
+        </div>
 
-        <article class="summary-card">
+        <div class="form-field">
 
-          <h3>Ethereum</h3>
+          <label for="market-type">Piyasa türü</label>
 
-          <p id="eth-price">Veri bekleniyor</p>
+          <select id="market-type">
 
-          <p id="eth-change">Değişim bekleniyor</p>
+            <option value="spot">Spot</option>
 
-        </article>
+            <option value="usdt-m">USDT-M Vadeli</option>
 
-        <article class="summary-card">
+            <option value="coin-m">COIN-M Vadeli</option>
 
-          <h3>Solana</h3>
+          </select>
 
-          <p id="sol-price">Veri bekleniyor</p>
+        </div>
 
-          <p id="sol-change">Değişim bekleniyor</p>
+      </div>
 
-        </article>
+      <div class="bitcoin-highlight" aria-label="Bitcoin piyasa özeti">
+
+        <div>
+
+          <span class="eyebrow">ÖNE ÇIKAN VARLIK</span>
+
+          <h3>Bitcoin (BTC)</h3>
+
+          <p id="btc-price" class="featured-price">Veri bekleniyor</p>
+
+          <p id="btc-change" class="change-value">24 saatlik değişim bekleniyor</p>
+
+        </div>
+
+        <p id="last-updated" class="muted">Son güncelleme bekleniyor</p>
+
+      </div>
+
+      <div class="market-overview">
+
+        <h3>Piyasa bilgisi</h3>
+
+        <p id="market-overview-message" class="muted" aria-live="polite">
+
+          Piyasa verileri yükleniyor.
+
+        </p>
+
+        <p id="currency-note" class="notice">
+
+          Para birimi ve veri kaynağı seçiminize göre fiyatlar gösterilir.
+
+        </p>
 
       </div>
 
     </section>
 
-    <section id="markets" class="section" aria-labelledby="markets-title">
+    <section id="markets" class="section">
 
-      <h2 id="markets-title">Kripto Para Piyasaları</h2>
+      <div class="section-heading">
+
+        <div>
+
+          <h2>Kripto Para Piyasaları</h2>
+
+          <p class="muted">Coin seçerek ayrıntılı analiz ekranına geçebilirsiniz.</p>
+
+        </div>
+
+      </div>
 
       <div class="toolbar">
 
-        <label for="coin-search">Kripto para ara</label>
+        <div class="form-field search-field">
 
-        <input
+          <label for="coin-search">Coin ara</label>
 
-          id="coin-search"
+          <input id="coin-search" type="search" placeholder="Bitcoin, BTC, Ethereum..." autocomplete="off">
 
-          type="search"
+        </div>
 
-          placeholder="Örneğin Bitcoin veya BTC"
+        <div class="form-field">
 
-          autocomplete="off"
+          <label for="market-sort">Sıralama</label>
 
-        >
+          <select id="market-sort">
+
+            <option value="market-cap">Piyasa değerine göre</option>
+
+            <option value="change-desc">En çok yükselen</option>
+
+            <option value="change-asc">En çok düşen</option>
+
+            <option value="volume">İşlem hacmine göre</option>
+
+          </select>
+
+        </div>
 
       </div>
 
@@ -156,7 +196,7 @@
 
         <table>
 
-          <caption>Kripto para fiyatları ve günlük değişimleri</caption>
+          <caption>Kripto para fiyatları, günlük değişimleri ve piyasa değerleri</caption>
 
           <thead>
 
@@ -166,9 +206,11 @@
 
               <th scope="col">Fiyat</th>
 
-              <th scope="col">24 saatlik değişim</th>
+              <th scope="col">24 saat</th>
 
               <th scope="col">Piyasa değeri</th>
+
+              <th scope="col">İşlem</th>
 
             </tr>
 
@@ -176,11 +218,7 @@
 
           <tbody id="market-table-body">
 
-            <tr>
-
-              <td colspan="4">Piyasa verileri yüklenmeyi bekliyor.</td>
-
-            </tr>
+            <tr><td colspan="5">Piyasa verileri bekleniyor.</td></tr>
 
           </tbody>
 
@@ -188,27 +226,55 @@
 
       </div>
 
-      <p id="market-message" role="status" aria-live="polite"></p>
+      <p id="market-message" class="status-message" role="status" aria-live="polite"></p>
 
     </section>
 
-    <section id="signals" class="section" aria-labelledby="signals-title">
+    <section id="signals" class="section">
 
-      <h2 id="signals-title">Otomatik Altcoin Sinyalleri</h2>
+      <div class="section-heading">
 
-      <p>
+        <div>
 
-        Sistem, teknik göstergeleri değerlendirdiğinde oluşan sinyalleri
+          <h2>Otomatik Piyasa Sinyalleri</h2>
 
-        burada gösterecek.
+          <p class="muted">Teknik göstergelerden hesaplanan değerlendirmeler.</p>
 
-      </p>
+        </div>
+
+      </div>
+
+      <div class="toolbar">
+
+        <div class="form-field">
+
+          <label for="signal-filter">Sinyal filtresi</label>
+
+          <select id="signal-filter">
+
+            <option value="all">Tüm sinyaller</option>
+
+            <option value="strong-buy">Güçlü AL</option>
+
+            <option value="buy">AL</option>
+
+            <option value="hold">TUT</option>
+
+            <option value="sell">SAT</option>
+
+            <option value="strong-sell">Güçlü SAT</option>
+
+          </select>
+
+        </div>
+
+      </div>
 
       <div class="table-container">
 
         <table>
 
-          <caption>Analiz sinyalleri ve risk değerlendirmeleri</caption>
+          <caption>Coin bazında teknik sinyal ve risk değerlendirmesi</caption>
 
           <thead>
 
@@ -218,9 +284,11 @@
 
               <th scope="col">Sinyal</th>
 
-              <th scope="col">Gerekçe</th>
+              <th scope="col">Puan</th>
 
-              <th scope="col">Risk seviyesi</th>
+              <th scope="col">Risk</th>
+
+              <th scope="col">İncele</th>
 
             </tr>
 
@@ -228,11 +296,7 @@
 
           <tbody id="signal-table-body">
 
-            <tr>
-
-              <td colspan="4">Henüz analiz sinyali oluşturulmadı.</td>
-
-            </tr>
+            <tr><td colspan="5">Sinyal hesaplaması bekleniyor.</td></tr>
 
           </tbody>
 
@@ -240,79 +304,131 @@
 
       </div>
 
+      <p id="signal-message" class="status-message" role="status" aria-live="polite"></p>
+
+      <p class="notice">Sinyaller teknik göstergelere dayalı otomatik değerlendirmelerdir. Yatırım tavsiyesi veya kazanç garantisi değildir.</p>
+
     </section>
 
-    <section id="analysis" class="section" aria-labelledby="analysis-title">
+    <section id="analysis" class="section">
 
-      <h2 id="analysis-title">Teknik Analiz</h2>
+      <div class="section-heading">
 
-      <p>
+        <div>
 
-        RSI, MACD, EMA, SMA, Bollinger Bantları, ATR, hacim ve
+          <h2>Coin Detaylı Analiz</h2>
 
-        destek-direnç analizleri bu bölümde yer alacak.
+          <p class="muted">Bir varlık seçerek teknik ve piyasa verilerini inceleyin.</p>
 
-      </p>
-
-      <label for="analysis-coin">Analiz edilecek varlık</label>
-
-      <select id="analysis-coin">
-
-        <option value="bitcoin">Bitcoin (BTC)</option>
-
-        <option value="ethereum">Ethereum (ETH)</option>
-
-        <option value="solana">Solana (SOL)</option>
-
-        <option value="cardano">Cardano (ADA)</option>
-
-        <option value="ripple">XRP</option>
-
-        <option value="dogecoin">Dogecoin (DOGE)</option>
-
-        <option value="avalanche-2">Avalanche (AVAX)</option>
-
-        <option value="pepe">Pepe (PEPE)</option>
-
-      </select>
-
-      <div id="technical-analysis-results" aria-live="polite">
-
-        Teknik analiz sonuçları bekleniyor.
+        </div>
 
       </div>
 
+      <div class="toolbar">
+
+        <div class="form-field">
+
+          <label for="analysis-coin">Analiz edilecek coin</label>
+
+          <select id="analysis-coin">
+
+            <option value="">Önce coin seçin</option>
+
+          </select>
+
+        </div>
+
+        <div class="form-field">
+
+          <label for="analysis-timeframe">Zaman dilimi</label>
+
+          <select id="analysis-timeframe">
+
+            <option value="5m">5 dakika</option>
+
+            <option value="15m">15 dakika</option>
+
+            <option value="1h">1 saat</option>
+
+            <option value="4h">4 saat</option>
+
+            <option value="1d" selected>1 gün</option>
+
+            <option value="1w">1 hafta</option>
+
+          </select>
+
+        </div>
+
+        <div class="form-field">
+
+          <label for="analysis-market">Analiz piyasası</label>
+
+          <select id="analysis-market">
+
+            <option value="spot">Spot</option>
+
+            <option value="usdt-m">USDT-M Vadeli</option>
+
+            <option value="coin-m">COIN-M Vadeli</option>
+
+          </select>
+
+        </div>
+
+      </div>
+
+      <div id="coin-detail" class="detail-panel" aria-live="polite">
+
+        <p>Analiz için yukarıdan bir coin seçin.</p>
+
+      </div>
+
+      <div id="technical-analysis-results" class="analysis-results">
+
+        <p>Teknik analiz sonuçları bekleniyor.</p>
+
+      </div>
+
+      <p id="analysis-message" class="status-message" role="status" aria-live="polite"></p>
+
     </section>
 
-    <section id="watchlist" class="section" aria-labelledby="watchlist-title">
+    <section id="watchlist" class="section">
 
-      <h2 id="watchlist-title">Takip Listem</h2>
+      <div class="section-heading">
 
-      <form id="watchlist-form">
+        <div>
 
-        <label for="watchlist-coin">Takibe eklenecek varlık</label>
+          <h2>Takip Listem</h2>
 
-        <input
+          <p class="muted">Takip etmek istediğiniz coinleri listenize ekleyin.</p>
 
-          id="watchlist-coin"
+        </div>
 
-          type="text"
+      </div>
 
-          placeholder="Kripto para adı veya sembolü"
+      <form id="watchlist-form" class="toolbar">
 
-          required
+        <div class="form-field search-field">
 
-        >
+          <label for="watchlist-coin">Coin adı veya sembolü</label>
+
+          <input id="watchlist-coin" type="text" placeholder="Örneğin BTC veya Bitcoin" required>
+
+        </div>
 
         <button type="submit">Takibe ekle</button>
 
       </form>
 
-      <ul id="watchlist-items" aria-label="Takip ettiğim kripto paralar">
+      <ul id="watchlist-items" class="watchlist-items" aria-label="Takip ettiğim coinler">
 
-        <li>Henüz takip listesine varlık eklenmedi.</li>
+        <li>Takip listeniz henüz boş.</li>
 
       </ul>
+
+      <p id="watchlist-message" class="status-message" role="status" aria-live="polite"></p>
 
     </section>
 
@@ -322,13 +438,9 @@
 
     <p>Kripto Analiz Platformu</p>
 
-    <p>
+    <p>Bilgilendirme amaçlıdır. Hiçbir sinyal kesin kazanç veya yatırım tavsiyesi değildir. Kripto varlık yatırımları yüksek risk içerir.</p>
 
-      Bilgilendirme amaçlıdır. Hiçbir sinyal kesin kazanç veya yatırım
-
-      tavsiyesi değildir. Kripto varlık yatırımları yüksek risk içerir.
-
-    </p>
+    <p>Spot verileri CoinGecko, desteklenen vadeli veriler Binance herkese açık piyasa uç noktalarından alınır.</p>
 
   </footer>
 
