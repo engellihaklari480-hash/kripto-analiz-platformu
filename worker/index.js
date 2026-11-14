@@ -6,11 +6,13 @@ import { z } from "zod";
 
 const OKX = "https://www.okx.com";
 
-const VERSION = "3.0.0";
+const VERSION = "3.1.0";
 
 const CACHE = new Map();
 
-const CACHE_LIMIT = 250;
+const IN_FLIGHT = new Map();
+
+const CACHE_LIMIT = 400;
 
 const BAR = {
 
@@ -38,7 +40,25 @@ const ALLOWED_ORIGINS = new Set([
 
 ]);
 
-function json(data, status = 200, origin = "") {
+class ApiError extends Error {
+
+  constructor(message, status = 502, retryAfter = null) {
+
+    super(message);
+
+    this.name = "ApiError";
+
+    this.status = status;
+
+    this.retryAfter = retryAfter;
+
+  }
+
+}
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+function json(data, status = 200, origin = "", extraHeaders = {}) {
 
   const headers = {
 
@@ -48,7 +68,9 @@ function json(data, status = 200, origin = "") {
 
     "x-content-type-options": "nosniff",
 
-    "referrer-policy": "no-referrer"
+    "referrer-policy": "no-referrer",
+
+    ...extraHeaders
 
   };
 
@@ -56,7 +78,7 @@ function json(data, status = 200, origin = "") {
 
     headers["access-control-allow-origin"] = origin;
 
-    headers["vary"] = "Origin";
+    headers.vary = "Origin";
 
     headers["access-control-allow-methods"] = "GET, OPTIONS";
 
@@ -64,45 +86,81 @@ function json(data, status = 200, origin = "") {
 
   }
 
-  return new Response(JSON.stringify(data), {
-
-    status,
-
-    headers
-
-  });
+  return new Response(JSON.stringify(data), { status, headers });
 
 }
 
-function cacheGet(key) {
+function cacheGet(key, allowExpired = false) {
 
   const item = CACHE.get(key);
 
-  if (!item || item.expires <= Date.now()) {
+  if (!item) return null;
+
+  const now = Date.now();
+
+  if (item.expiresAt > now) {
+
+    return {
+
+      value: item.value,
+
+      stale: false,
+
+      fetchedAt: item.fetchedAt
+
+    };
+
+  }
+
+  if (allowExpired && item.staleUntil > now) {
+
+    return {
+
+      value: item.value,
+
+      stale: true,
+
+      fetchedAt: item.fetchedAt
+
+    };
+
+  }
+
+  if (item.staleUntil <= now) {
 
     CACHE.delete(key);
 
-    return null;
-
   }
 
-  return item.value;
+  return null;
 
 }
 
-function cacheSet(key, value, ttl = 15000) {
+function cacheSet(key, value, ttl) {
 
   if (CACHE.size >= CACHE_LIMIT) {
 
-    CACHE.delete(CACHE.keys().next().value);
+    const oldestKey = CACHE.keys().next().value;
+
+    if (oldestKey !== undefined) {
+
+      CACHE.delete(oldestKey);
+
+    }
 
   }
+
+  const now = Date.now();
 
   CACHE.set(key, {
 
     value,
 
-    expires: Date.now() + ttl
+    fetchedAt: now,
+
+    expiresAt: now + ttl,
+
+    staleUntil: now + ttl + 10 * 60 * 1000
 
   });
 
@@ -110,51 +168,21 @@ function cacheSet(key, value, ttl = 15000) {
 
 }
 
-async function okx(path, params = {}, ttl = 10000) {
-
-  const url = new URL(path, OKX);
-
-  for (const [key, value] of Object.entries(params)) {
-
-    if (
-
-      value !== undefined &&
-
-      value !== null &&
-
-      value !== ""
-
-    ) {
-
-      url.searchParams.set(key, String(value));
-
-    }
-
-  }
-
-  const cacheKey = url.toString();
-
-  const cached = cacheGet(cacheKey);
-
-  if (cached) return cached;
+async function requestOkx(url, timeoutMs = 12000) {
 
   const controller = new AbortController();
 
-  const timer = setTimeout(() => {
-
-    controller.abort();
-
-  }, 12000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
 
     const response = await fetch(url, {
 
+      method: "GET",
+
       headers: {
 
-        Accept: "application/json",
-
-        "User-Agent": "KriptoAnalizPlatformu/3.0"
+        Accept: "application/json"
 
       },
 
@@ -164,33 +192,73 @@ async function okx(path, params = {}, ttl = 10000) {
 
     if (!response.ok) {
 
-      throw new Error(`OKX HTTP ${response.status}`);
+      const retryHeader = Number(response.headers.get("Retry-After"));
 
-    }
+      const retryAfter =
 
-    const body = await response.json();
+        Number.isFinite(retryHeader) && retryHeader > 0
 
-    if (body.code !== "0") {
+          ? retryHeader
 
-      throw new Error(
+          : null;
 
-        `OKX ${body.code}: ${body.msg || "Bilinmeyen API hatası"}`
+      throw new ApiError(
+
+        `OKX HTTP ${response.status}`,
+
+        response.status,
+
+        retryAfter
 
       );
 
     }
 
-    return cacheSet(cacheKey, body.data || [], ttl);
+    const body = await response.json();
+
+    if (!body || body.code !== "0" || !Array.isArray(body.data)) {
+
+      throw new ApiError(
+
+        `OKX ${body?.code || "API"}: ${
+
+          body?.msg || "Geçersiz veya beklenmeyen API yanıtı."
+
+        }`,
+
+        502
+
+      );
+
+    }
+
+    return body.data;
 
   } catch (error) {
 
     if (error.name === "AbortError") {
 
-      throw new Error("OKX isteği zaman aşımına uğradı.");
+      throw new ApiError("OKX isteği zaman aşımına uğradı.", 504);
 
     }
 
-    throw error;
+    if (error instanceof ApiError) {
+
+      throw error;
+
+    }
+
+    throw new ApiError(
+
+      `OKX bağlantı hatası: ${
+
+        error.message || "Bilinmeyen ağ hatası"
+
+      }`,
+
+      502
+
+    );
 
   } finally {
 
@@ -200,9 +268,105 @@ async function okx(path, params = {}, ttl = 10000) {
 
 }
 
+async function okx(path, params = {}, ttl = 10000, options = {}) {
+
+  const url = new URL(path, OKX);
+
+  for (const [key, value] of Object.entries(params)) {
+
+    if (value !== undefined && value !== null && value !== "") {
+
+      url.searchParams.set(key, String(value));
+
+    }
+
+  }
+
+  const key = url.toString();
+
+  const fresh = cacheGet(key);
+
+  if (fresh) {
+
+    return fresh.value;
+
+  }
+
+  if (IN_FLIGHT.has(key)) {
+
+    return IN_FLIGHT.get(key);
+
+  }
+
+  const task = (async () => {
+
+    try {
+
+      let lastError;
+
+      for (let attempt = 0; attempt < 2; attempt++) {
+
+        try {
+
+          const data = await requestOkx(
+
+            url,
+
+            options.timeoutMs || 12000
+
+          );
+
+          return cacheSet(key, data, ttl);
+
+        } catch (error) {
+
+          lastError = error;
+
+          if (attempt === 0 && error.status === 429) {
+
+            const waitMs = Math.min(
+
+              2000,
+
+              Math.max(500, (error.retryAfter || 1) * 1000)
+
+            );
+
+            await sleep(waitMs);
+
+            continue;
+
+          }
+
+          break;
+
+        }
+
+      }
+
+      // Eski veri güncelmiş gibi sunulmaz.
+
+      // 429 ve 5xx durumlarında hata açıkça döndürülür.
+
+      throw lastError;
+
+    } finally {
+
+      IN_FLIGHT.delete(key);
+
+    }
+
+  })();
+
+  IN_FLIGHT.set(key, task);
+
+  return task;
+
+}
+
 function cleanSymbol(value) {
 
-  const s = String(value || "")
+  const symbol = String(value || "")
 
     .trim()
 
@@ -210,43 +374,41 @@ function cleanSymbol(value) {
 
     .replaceAll("_", "-");
 
-  if (!/^[A-Z0-9-]{2,40}$/.test(s)) {
+  if (!/^[A-Z0-9-]{2,40}$/.test(symbol)) {
 
-    throw new Error("Geçersiz sembol.");
+    throw new ApiError("Geçersiz sembol.", 400);
 
   }
 
-  return s;
+  return symbol;
 
 }
 
 function spotInstrument(symbol) {
 
-  const s = cleanSymbol(symbol);
+  const value = cleanSymbol(symbol);
 
-  if (s.includes("-")) return s;
+  if (value.includes("-")) {
 
-  if (s.endsWith("USDT")) {
-
-    return `${s.slice(0, -4)}-USDT`;
+    return value;
 
   }
 
-  if (s.endsWith("USDC")) {
+  for (const quote of ["USDT", "USDC", "BTC", "USD"]) {
 
-    return `${s.slice(0, -4)}-USDC`;
+    if (value.endsWith(quote) && value.length > quote.length) {
 
-  }
+      return `${value.slice(0, -quote.length)}-${quote}`;
 
-  if (s.endsWith("BTC")) {
-
-    return `${s.slice(0, -3)}-BTC`;
+    }
 
   }
 
-  throw new Error(
+  throw new ApiError(
 
-    "Spot paritesi OKX biçiminde değil. Örnek: BTC-USDT."
+    "Spot paritesi OKX biçiminde olmalı. Örnek: BTC-USDT.",
+
+    400
 
   );
 
@@ -268,9 +430,11 @@ async function resolveInstrument(market, symbol) {
 
   if (market !== "usdtm" && market !== "coinm") {
 
-    throw new Error(
+    throw new ApiError(
 
-      "Piyasa türü spot, usdtm veya coinm olmalı."
+      "Piyasa türü spot, usdtm veya coinm olmalı.",
+
+      400
 
     );
 
@@ -290,39 +454,43 @@ async function resolveInstrument(market, symbol) {
 
     { instType: "SWAP" },
 
-    60000
+    120000
 
   );
 
   const candidates = list.filter(
 
-    x => x.state === "live" && x.baseCcy === base
+    item => item.state === "live" && item.baseCcy === base
 
   );
 
-  const chosen = market === "usdtm"
+  const chosen =
 
-    ? candidates.find(
+    market === "usdtm"
 
-        x => x.settleCcy === "USDT" && x.quoteCcy === "USDT"
+      ? candidates.find(item => item.settleCcy === "USDT")
 
-      )
+      : candidates.find(
 
-    : candidates.find(
+          item =>
 
-        x => x.settleCcy === base && x.quoteCcy === "USD"
+            item.settleCcy === base &&
 
-      );
+            item.ctType === "inverse"
+
+        );
 
   if (!chosen) {
 
-    throw new Error(
+    throw new ApiError(
 
       `${base} için OKX ${
 
         market === "usdtm" ? "USDT-M" : "COIN-M"
 
-      } canlı SWAP sözleşmesi bulunamadı.`
+      } canlı SWAP sözleşmesi bulunamadı.`,
+
+      404
 
     );
 
@@ -340,51 +508,63 @@ async function resolveInstrument(market, symbol) {
 
 }
 
-function num(v) {
+function num(value) {
 
-  const n = Number(v);
+  if (value === null || value === undefined || value === "") {
 
-  return Number.isFinite(n) ? n : null;
+    return null;
+
+  }
+
+  const result = Number(value);
+
+  return Number.isFinite(result) ? result : null;
 
 }
 
-function pct(a, b) {
+function pct(current, base) {
 
-  return a && b ? ((a - b) / b) * 100 : null;
+  return current !== null && base !== null && base !== 0
+
+    ? ((current - base) / base) * 100
+
+    : null;
 
 }
 
-function round(v, digits = 8) {
+function round(value, digits = 8) {
 
-  return v == null || !Number.isFinite(v)
+  return value === null ||
+
+    value === undefined ||
+
+    !Number.isFinite(value)
 
     ? null
 
-    : Number(v.toFixed(digits));
+    : Number(value.toFixed(digits));
 
 }
 
-function freshness(ts, maxAgeMs = 120000) {
+function freshness(timestamp, maxAgeMs = 120000) {
 
-  const time = Number(ts || 0);
+  const time = Number(timestamp || 0);
 
-  const age = time
+  const age =
 
-    ? Math.max(0, Date.now() - time)
+    time > 0
 
-    : null;
+      ? Math.max(0, Date.now() - time)
+
+      : null;
 
   return {
 
     timestamp: time || null,
 
-    ageSeconds: age == null
+    ageSeconds: age === null ? null : Math.round(age / 1000),
 
-      ? null
-
-      : Math.round(age / 1000),
-
-    stale: age == null || age > maxAgeMs
+    stale: age === null || age > maxAgeMs
 
   };
 
@@ -400,25 +580,27 @@ async function ticker(market, symbol) {
 
     { instId: instrument.instId },
 
-    5000
+    8000
 
   );
 
-  const t = rows[0];
+  const item = rows[0];
 
-  if (!t) {
+  if (!item) {
 
-    throw new Error(
+    throw new ApiError(
 
-      "OKX bu enstrüman için fiyat döndürmedi."
+      "OKX bu enstrüman için fiyat döndürmedi.",
+
+      404
 
     );
 
   }
 
-  const last = num(t.last);
+  const last = num(item.last);
 
-  const open = num(t.open24h);
+  const open = num(item.open24h);
 
   return {
 
@@ -434,23 +616,23 @@ async function ticker(market, symbol) {
 
     change24hPercent: round(pct(last, open), 5),
 
-    high24h: num(t.high24h),
+    high24h: num(item.high24h),
 
-    low24h: num(t.low24h),
+    low24h: num(item.low24h),
 
     open24h: open,
 
-    volume24hBase: num(t.vol24h),
+    volume24hBase: num(item.vol24h),
 
-    volume24hQuote: num(t.volCcy24h),
+    volume24hQuote: num(item.volCcy24h),
 
-    bid: num(t.bidPx),
+    bid: num(item.bidPx),
 
-    ask: num(t.askPx),
+    ask: num(item.askPx),
 
-    timestamp: Number(t.ts),
+    timestamp: num(item.ts),
 
-    freshness: freshness(t.ts),
+    freshness: freshness(item.ts),
 
     settlementCurrency:
 
@@ -466,101 +648,123 @@ async function ticker(market, symbol) {
 
 function ema(values, period) {
 
-  const out = Array(values.length).fill(null);
+  const output = Array(values.length).fill(null);
 
-  if (values.length < period) return out;
+  if (values.length < period) {
+
+    return output;
+
+  }
 
   let sum = 0;
 
-  for (let i = 0; i < period; i++) {
+  for (let index = 0; index < period; index++) {
 
-    sum += values[i];
+    sum += values[index];
 
   }
 
   let current = sum / period;
 
-  out[period - 1] = current;
+  output[period - 1] = current;
 
-  const k = 2 / (period + 1);
+  const multiplier = 2 / (period + 1);
 
-  for (let i = period; i < values.length; i++) {
+  for (let index = period; index < values.length; index++) {
 
     current =
 
-      values[i] * k +
+      values[index] * multiplier +
 
-      current * (1 - k);
+      current * (1 - multiplier);
 
-    out[i] = current;
+    output[index] = current;
 
   }
 
-  return out;
+  return output;
 
 }
 
 function sma(values, period) {
 
-  if (values.length < period) return null;
+  if (values.length < period) {
 
-  const slice = values.slice(-period);
+    return null;
 
-  return slice.reduce((a, b) => a + b, 0) / period;
+  }
+
+  return values
+
+    .slice(-period)
+
+    .reduce((sum, value) => sum + value, 0) / period;
 
 }
 
 function rsi(values, period = 14) {
 
-  if (values.length <= period) return null;
+  if (values.length <= period) {
 
-  let gain = 0;
-
-  let loss = 0;
-
-  for (let i = 1; i <= period; i++) {
-
-    const d = values[i] - values[i - 1];
-
-    gain += Math.max(d, 0);
-
-    loss += Math.max(-d, 0);
+    return null;
 
   }
 
-  let ag = gain / period;
+  let gains = 0;
 
-  let al = loss / period;
+  let losses = 0;
 
-  for (let i = period + 1; i < values.length; i++) {
+  for (let index = 1; index <= period; index++) {
 
-    const d = values[i] - values[i - 1];
+    const change = values[index] - values[index - 1];
 
-    ag =
+    gains += Math.max(change, 0);
 
-      (ag * (period - 1) + Math.max(d, 0)) /
+    losses += Math.max(-change, 0);
+
+  }
+
+  let averageGain = gains / period;
+
+  let averageLoss = losses / period;
+
+  for (
+
+    let index = period + 1;
+
+    index < values.length;
+
+    index++
+
+  ) {
+
+    const change = values[index] - values[index - 1];
+
+    averageGain =
+
+      (averageGain * (period - 1) + Math.max(change, 0)) /
 
       period;
 
-    al =
+    averageLoss =
 
-      (al * (period - 1) + Math.max(-d, 0)) /
+      (averageLoss * (period - 1) + Math.max(-change, 0)) /
 
       period;
 
   }
 
-  if (al === 0) {
+  if (averageLoss === 0) {
 
-    return ag === 0 ? 50 : 100;
+    return averageGain === 0 ? 50 : 100;
 
   }
 
-  return 100 - 100 / (1 + ag / al);
+  return 100 - 100 / (1 + averageGain / averageLoss);
 
 }
 
-function stochRsi(values, period = 14) {
+function stochasticRsi(values, period = 14) {
 
   if (values.length < period * 2 + 1) {
 
@@ -592,11 +796,15 @@ function stochRsi(values, period = 14) {
 
     .slice(-period)
 
-    .filter(v => v != null);
+    .filter(value => value !== null);
 
-  if (recent.length < period) return null;
+  if (recent.length !== period) {
 
-  const current = recent.at(-1);
+    return null;
+
+  }
+
+  const current = recent[recent.length - 1];
 
   const low = Math.min(...recent);
 
@@ -606,31 +814,35 @@ function stochRsi(values, period = 14) {
 
     ? 50
 
-    : (current - low) / (high - low) * 100;
+    : ((current - low) / (high - low)) * 100;
 
 }
 
 function atr(candles, period = 14) {
 
-  if (candles.length <= period) return null;
+  if (candles.length < period + 1) {
 
-  const trs = [];
+    return null;
 
-  for (let i = 1; i < candles.length; i++) {
+  }
 
-    const c = candles[i];
+  const ranges = [];
 
-    const prev = candles[i - 1].close;
+  for (let index = 1; index < candles.length; index++) {
 
-    trs.push(
+    const current = candles[index];
+
+    const previousClose = candles[index - 1].close;
+
+    ranges.push(
 
       Math.max(
 
-        c.high - c.low,
+        current.high - current.low,
 
-        Math.abs(c.high - prev),
+        Math.abs(current.high - previousClose),
 
-        Math.abs(c.low - prev)
+        Math.abs(current.low - previousClose)
 
       )
 
@@ -640,17 +852,17 @@ function atr(candles, period = 14) {
 
   let value =
 
-    trs.slice(0, period).reduce((a, b) => a + b, 0) /
+    ranges
 
-    period;
+      .slice(0, period)
 
-  for (let i = period; i < trs.length; i++) {
+      .reduce((sum, item) => sum + item, 0) / period;
+
+  for (let index = period; index < ranges.length; index++) {
 
     value =
 
-      (value * (period - 1) + trs[i]) /
-
-      period;
+      (value * (period - 1) + ranges[index]) / period;
 
   }
 
@@ -666,29 +878,29 @@ function adx(candles, period = 14) {
 
   }
 
-  const plus = [];
-
-  const minus = [];
-
   const tr = [];
 
-  for (let i = 1; i < candles.length; i++) {
+  const plusDm = [];
 
-    const a = candles[i - 1];
+  const minusDm = [];
 
-    const b = candles[i];
+  for (let index = 1; index < candles.length; index++) {
 
-    const up = b.high - a.high;
+    const previous = candles[index - 1];
 
-    const down = a.low - b.low;
+    const current = candles[index];
 
-    plus.push(
+    const up = current.high - previous.high;
+
+    const down = previous.low - current.low;
+
+    plusDm.push(
 
       up > down && up > 0 ? up : 0
 
     );
 
-    minus.push(
+    minusDm.push(
 
       down > up && down > 0 ? down : 0
 
@@ -698,11 +910,11 @@ function adx(candles, period = 14) {
 
       Math.max(
 
-        b.high - b.low,
+        current.high - current.low,
 
-        Math.abs(b.high - a.close),
+        Math.abs(current.high - previous.close),
 
-        Math.abs(b.low - a.close)
+        Math.abs(current.low - previous.close)
 
       )
 
@@ -710,312 +922,447 @@ function adx(candles, period = 14) {
 
   }
 
+  let trSmooth = tr
+
+    .slice(0, period)
+
+    .reduce((sum, item) => sum + item, 0);
+
+  let plusSmooth = plusDm
+
+    .slice(0, period)
+
+    .reduce((sum, item) => sum + item, 0);
+
+  let minusSmooth = minusDm
+
+    .slice(0, period)
+
+    .reduce((sum, item) => sum + item, 0);
+
   const dx = [];
 
-  for (let i = period - 1; i < tr.length; i++) {
+  for (let index = period; index < tr.length; index++) {
 
-    const trSum = tr
+    if (index > period - 1) {
 
-      .slice(i - period + 1, i + 1)
+      trSmooth =
 
-      .reduce((a, b) => a + b, 0);
+        trSmooth - trSmooth / period + tr[index];
 
-    if (!trSum) continue;
+      plusSmooth =
 
-    const p =
+        plusSmooth - plusSmooth / period + plusDm[index];
 
-      plus
+      minusSmooth =
 
-        .slice(i - period + 1, i + 1)
+        minusSmooth - minusSmooth / period + minusDm[index];
 
-        .reduce((a, b) => a + b, 0) /
+    }
 
-      trSum * 100;
+    if (trSmooth <= 0) {
 
-    const m =
+      continue;
 
-      minus
+    }
 
-        .slice(i - period + 1, i + 1)
+    const plusDi = 100 * plusSmooth / trSmooth;
 
-        .reduce((a, b) => a + b, 0) /
+    const minusDi = 100 * minusSmooth / trSmooth;
 
-      trSum * 100;
+    const denominator = plusDi + minusDi;
 
     dx.push(
 
-      p + m
+      denominator === 0
 
-        ? Math.abs(p - m) / (p + m) * 100
+        ? 0
 
-        : 0
+        : 100 * Math.abs(plusDi - minusDi) / denominator
 
     );
 
   }
 
-  return dx.length >= period
+  if (dx.length < period) {
 
-    ? dx.slice(-period).reduce((a, b) => a + b, 0) / period
+    return null;
 
-    : null;
+  }
+
+  let value =
+
+    dx
+
+      .slice(0, period)
+
+      .reduce((sum, item) => sum + item, 0) / period;
+
+  for (let index = period; index < dx.length; index++) {
+
+    value =
+
+      (value * (period - 1) + dx[index]) / period;
+
+  }
+
+  return value;
 
 }
- function analyze(candles) {
 
-  if (candles.length < 60) {
+function analyze(candles) {
 
-    throw new Error(
+  if (!Array.isArray(candles) || candles.length < 210) {
 
-      "En az 60 kapanmış mum olmadan güvenilir analiz üretilemez."
+    return {
 
-    );
+      signal: "SİNYAL YOK",
+
+      score: 0,
+
+      reasons: [
+
+        "EMA200 ve diğer göstergeler için en az 210 kapanmış mum gerekli."
+
+      ],
+
+      riskModel: null,
+
+      candleCount: candles?.length || 0
+
+    };
 
   }
 
-  const closes = candles.map(x => x.close);
+  const closes = candles.map(item => item.close);
 
-  const last = closes.at(-1);
+  if (
 
-  const emaValues = {};
+    closes.some(
 
-  for (const p of [9, 20, 50, 100, 200]) {
-
-    emaValues[p] = ema(closes, p).at(-1) ?? null;
-
-  }
-
-  const ema12 = ema(closes, 12);
-
-  const ema26 = ema(closes, 26);
-
-  const macdLine = ema12
-
-    .map((v, i) =>
-
-      v == null || ema26[i] == null
-
-        ? null
-
-        : v - ema26[i]
+      value => !Number.isFinite(value) || value <= 0
 
     )
 
-    .filter(v => v != null);
+  ) {
 
-  const macdSignal = ema(macdLine, 9).at(-1) ?? null;
+    throw new ApiError(
+
+      "Mum verisinde geçersiz kapanış fiyatı var.",
+
+      502
+
+    );
+
+  }
+
+  const last = closes[closes.length - 1];
+
+  const emaValues = {};
+
+  for (const period of [9, 20, 50, 100, 200]) {
+
+    emaValues[period] = ema(closes, period).at(-1);
+
+  }
+
+  const macdFast = ema(closes, 12);
+
+  const macdSlow = ema(closes, 26);
+
+  const macdLine = closes
+
+    .map((_, index) =>
+
+      macdFast[index] === null ||
+
+      macdSlow[index] === null
+
+        ? null
+
+        : macdFast[index] - macdSlow[index]
+
+    )
+
+    .filter(value => value !== null);
+
+  const macdSignalSeries = ema(macdLine, 9);
 
   const macdNow = macdLine.at(-1) ?? null;
 
-  const period = closes.slice(-20);
+  const macdSignal = macdSignalSeries.at(-1) ?? null;
+
+  const last20 = closes.slice(-20);
 
   const mean =
 
-    period.reduce((a, b) => a + b, 0) /
+    last20.reduce((sum, value) => sum + value, 0) /
 
-    period.length;
+    last20.length;
 
-  const sd = Math.sqrt(
+  const deviation = Math.sqrt(
 
-    period.reduce(
+    last20.reduce(
 
-      (a, b) => a + (b - mean) ** 2,
+      (sum, value) => sum + (value - mean) ** 2,
 
       0
 
-    ) / period.length
+    ) / last20.length
 
   );
 
-  const r = rsi(closes);
+  const currentRsi = rsi(closes);
 
-  const sr = stochRsi(closes);
+  const currentStochRsi = stochasticRsi(closes);
 
-  const a = atr(candles);
+  const currentAtr = atr(candles);
 
-  const d = adx(candles);
+  const currentAdx = adx(candles);
+
+  const recent = candles.slice(-20);
+
+  const volume = recent.reduce(
+
+    (sum, item) => sum + (item.volume || 0),
+
+    0
+
+  );
+
+  const vwap =
+
+    volume > 0
+
+      ? recent.reduce(
+
+          (sum, item) =>
+
+            sum +
+
+            ((item.high + item.low + item.close) / 3) *
+
+              (item.volume || 0),
+
+          0
+
+        ) / volume
+
+      : null;
 
   const recentHigh = Math.max(
 
-    ...candles.slice(-20).map(x => x.high)
+    ...recent.map(item => item.high)
 
   );
 
   const recentLow = Math.min(
 
-    ...candles.slice(-20).map(x => x.low)
+    ...recent.map(item => item.low)
 
   );
 
-  const vwapVol = candles
+  const required = [
 
-    .slice(-20)
+    currentRsi,
 
-    .reduce((s, c) => s + c.volume, 0);
+    currentAtr,
 
-  const vwap = vwapVol
+    currentAdx,
 
-    ? candles
+    emaValues[9],
 
-        .slice(-20)
+    emaValues[20],
 
-        .reduce(
+    emaValues[50],
 
-          (s, c) =>
+    emaValues[100],
 
-            s +
+    emaValues[200],
 
-            ((c.high + c.low + c.close) / 3) *
+    macdNow,
 
-              c.volume,
+    macdSignal
 
-          0
+  ];
 
-        ) / vwapVol
+  if (
 
-    : null;
+    required.some(
+
+      value => value === null || !Number.isFinite(value)
+
+    )
+
+  ) {
+
+    return {
+
+      signal: "SİNYAL YOK",
+
+      score: 0,
+
+      reasons: [
+
+        "Gerekli göstergelerin tamamı hesaplanamadı; eksik veriyle sinyal üretilmedi."
+
+      ],
+
+      candleCount: candles.length,
+
+      lastPrice: round(last),
+
+      riskModel: null
+
+    };
+
+  }
 
   let score = 0;
 
   const reasons = [];
 
-  if (
+  if (last > emaValues[20] && emaValues[20] > emaValues[50]) {
 
-    emaValues[20] != null &&
+    score += 2;
 
-    emaValues[50] != null
+    reasons.push(
 
-  ) {
+      "Fiyat EMA20 ve EMA50 üzerinde; kısa vadeli trend pozitif."
 
-    if (
+    );
 
-      last > emaValues[20] &&
+  } else if (
 
-      emaValues[20] > emaValues[50]
+    last < emaValues[20] &&
 
-    ) {
-
-      score += 2;
-
-      reasons.push(
-
-        "Fiyat EMA20 ve EMA50 üzerinde; kısa vadeli trend pozitif."
-
-      );
-
-    } else if (
-
-      last < emaValues[20] &&
-
-      emaValues[20] < emaValues[50]
-
-    ) {
-
-      score -= 2;
-
-      reasons.push(
-
-        "Fiyat EMA20 ve EMA50 altında; kısa vadeli trend negatif."
-
-      );
-
-    }
-
-  }
-
-  if (r != null) {
-
-    if (r > 55 && r < 70) {
-
-      score++;
-
-      reasons.push(
-
-        "RSI pozitif momentum bölgesinde."
-
-      );
-
-    } else if (r < 45 && r > 30) {
-
-      score--;
-
-      reasons.push(
-
-        "RSI negatif momentum bölgesinde."
-
-      );
-
-    } else if (r >= 70) {
-
-      reasons.push(
-
-        "RSI aşırı alım bölgesinde; geri çekilme riski var."
-
-      );
-
-    } else if (r <= 30) {
-
-      reasons.push(
-
-        "RSI aşırı satım bölgesinde; tepki ihtimali var ancak dönüş teyidi yok."
-
-      );
-
-    }
-
-  }
-
-  if (
-
-    macdNow != null &&
-
-    macdSignal != null
+    emaValues[20] < emaValues[50]
 
   ) {
 
-    if (macdNow > macdSignal) {
+    score -= 2;
 
-      score++;
+    reasons.push(
 
-      reasons.push(
+      "Fiyat EMA20 ve EMA50 altında; kısa vadeli trend negatif."
 
-        "MACD çizgisi sinyal çizgisinin üzerinde."
-
-      );
-
-    } else {
-
-      score--;
-
-      reasons.push(
-
-        "MACD çizgisi sinyal çizgisinin altında."
-
-      );
-
-    }
+    );
 
   }
 
-  if (vwap != null) {
+  if (emaValues[50] > emaValues[200]) {
+
+    score++;
+
+    reasons.push(
+
+      "EMA50, EMA200 üzerinde; orta vadeli eğilim pozitif."
+
+    );
+
+  } else if (emaValues[50] < emaValues[200]) {
+
+    score--;
+
+    reasons.push(
+
+      "EMA50, EMA200 altında; orta vadeli eğilim negatif."
+
+    );
+
+  }
+
+  if (currentRsi > 55 && currentRsi < 70) {
+
+    score++;
+
+    reasons.push(
+
+      "RSI pozitif momentum bölgesinde."
+
+    );
+
+  } else if (currentRsi < 45 && currentRsi > 30) {
+
+    score--;
+
+    reasons.push(
+
+      "RSI negatif momentum bölgesinde."
+
+    );
+
+  } else if (currentRsi >= 70) {
+
+    reasons.push(
+
+      "RSI aşırı alım bölgesinde; geri çekilme riski artmış olabilir."
+
+    );
+
+  } else if (currentRsi <= 30) {
+
+    reasons.push(
+
+      "RSI aşırı satım bölgesinde; tek başına dönüş teyidi değildir."
+
+    );
+
+  }
+
+  if (macdNow > macdSignal) {
+
+    score++;
+
+    reasons.push(
+
+      "MACD çizgisi sinyal çizgisinin üzerinde."
+
+    );
+
+  } else {
+
+    score--;
+
+    reasons.push(
+
+      "MACD çizgisi sinyal çizgisinin altında."
+
+    );
+
+  }
+
+  if (vwap !== null) {
 
     if (last > vwap) {
 
       score++;
 
+      reasons.push(
+
+        "Fiyat son 20 mumluk VWAP üzerinde."
+
+      );
+
     } else {
 
       score--;
+
+      reasons.push(
+
+        "Fiyat son 20 mumluk VWAP altında."
+
+      );
 
     }
 
   }
 
-  if (d != null && d < 18) {
+  if (currentAdx < 18) {
 
     reasons.push(
 
-      "ADX zayıf trend gücüne işaret ediyor; yatay piyasa olasılığı yüksek."
+      "ADX zayıf trend gücüne işaret ediyor; sinyal güveni sınırlı."
 
     );
 
@@ -1023,7 +1370,7 @@ function adx(candles, period = 14) {
 
   let signal =
 
-    score >= 4
+    score >= 5
 
       ? "GÜÇLÜ AL"
 
@@ -1031,7 +1378,7 @@ function adx(candles, period = 14) {
 
         ? "AL"
 
-        : score <= -4
+        : score <= -5
 
           ? "GÜÇLÜ SAT"
 
@@ -1041,66 +1388,58 @@ function adx(candles, period = 14) {
 
             : "TUT";
 
-  if (
+  if (currentAdx < 12 && Math.abs(score) < 5) {
 
-    [last, r, emaValues[20], macdNow, macdSignal, a]
-
-      .some(v => v == null) ||
-
-    !Number.isFinite(last)
-
-  ) {
-
-    signal = "SİNYAL YOK";
-
-    reasons.push(
-
-      "Gerekli göstergelerden biri hesaplanamadı."
-
-    );
+    signal = "TUT";
 
   }
 
-  const shortBias = score < 0;
+  const direction = signal.includes("AL")
 
-  const stop = a
+    ? "long"
 
-    ? (
+    : signal.includes("SAT")
 
-        shortBias
+      ? "short"
 
-          ? last + 1.5 * a
+      : null;
 
-          : last - 1.5 * a
+  const stop =
 
-      )
+    direction === "long"
 
-    : null;
+      ? last - 1.5 * currentAtr
 
-  const risk = stop != null
+      : direction === "short" 
+        ? last + 1.5 * currentAtr
 
-    ? Math.abs(stop - last)
+        : null;
 
-    : null;
+  const risk =
+
+    stop === null
+
+      ? null
+
+      : Math.abs(last - stop);
 
   return {
 
     candleCount: candles.length,
 
-    lastClosedCandleOpenTime:
-
-      candles.at(-1).time,
+    lastClosedCandleOpenTime: candles.at(-1).time,
 
     lastPrice: round(last),
 
-    rsi14: round(r, 3), 
-    stochasticRsi14: round(sr, 3),
+    rsi14: round(currentRsi, 3),
+
+    stochasticRsi14: round(currentStochRsi, 3),
 
     ema: Object.fromEntries(
 
       Object.entries(emaValues).map(
 
-        ([k, v]) => [k, round(v)]
+        ([key, value]) => [key, round(value)]
 
       )
 
@@ -1114,19 +1453,21 @@ function adx(candles, period = 14) {
 
     macdSignal: round(macdSignal),
 
+    macdHistogram: round(macdNow - macdSignal),
+
     bollinger: {
 
-      upper: round(mean + 2 * sd),
+      upper: round(mean + 2 * deviation),
 
       middle: round(mean),
 
-      lower: round(mean - 2 * sd)
+      lower: round(mean - 2 * deviation)
 
     },
 
-    atr14: round(a),
+    atr14: round(currentAtr),
 
-    adx14: round(d),
+    adx14: round(currentAdx),
 
     vwap20: round(vwap),
 
@@ -1140,47 +1481,55 @@ function adx(candles, period = 14) {
 
     reasons,
 
-    riskModel:
+    riskModel: direction
 
-      signal === "SİNYAL YOK"
+      ? {
 
-        ? null
+          direction,
 
-        : {
+          entryReference: round(last),
 
-            direction: shortBias
+          stopLossIllustrative: round(stop),
 
-              ? "short-scenario"
+          target1Illustrative: round(
 
-              : "long-scenario",
+            direction === "long"
 
-            stopLossIllustrative: round(stop),
+              ? last + 2 * risk
 
-            target1Illustrative: round(
+              : last - 2 * risk
 
-              shortBias
+          ),
 
-                ? last - 2 * (risk || 0)
+          target2Illustrative: round(
 
-                : last + 2 * (risk || 0)
+            direction === "long"
 
-            ),
+              ? last + 3 * risk
 
-            target2Illustrative: round(
+              : last - 3 * risk
 
-              shortBias
+          ),
 
-                ? last - 3 * (risk || 0)
+          riskRewardTarget1: 2,
 
-                : last + 3 * (risk || 0)
+          riskRewardTarget2: 3,
 
-            ),
+          invalidation:
 
-            note:
+            direction === "long"
 
-              "Örnek ATR tabanlı seviyelerdir; emir veya yatırım tavsiyesi değildir."
+              ? "Kapanışın örnek stop seviyesinin altına inmesi"
 
-          }
+              : "Kapanışın örnek stop seviyesinin üstüne çıkması",
+
+          note:
+
+            "Bunlar ATR tabanlı teorik referans seviyeleridir; emir, kesin hedef veya yatırım tavsiyesi değildir. Komisyon ve kayma dahil değildir."
+
+        }
+
+      : null
 
   };
 
@@ -1198,11 +1547,17 @@ async function candles(
 
 ) {
 
-  const cfg = BAR[interval];
+  const config = BAR[interval];
 
-  if (!cfg) {
+  if (!config) {
 
-    throw new Error("Desteklenmeyen zaman dilimi.");
+    throw new ApiError(
+
+      "Desteklenmeyen zaman dilimi.",
+
+      400
+
+    );
 
   }
 
@@ -1210,7 +1565,7 @@ async function candles(
 
     60,
 
-    Math.min(300, Number(limit) || 200)
+    Math.min(300, Math.floor(Number(limit) || 250))
 
   );
 
@@ -1230,13 +1585,13 @@ async function candles(
 
       instId: instrument.instId,
 
-      bar: cfg.okx,
+      bar: config.okx,
 
       limit: safeLimit
 
     },
 
-    10000
+    20000
 
   );
 
@@ -1254,27 +1609,35 @@ async function candles(
 
       close: num(row[4]),
 
-      volume: num(row[5]),
+      volume: num(row[5]) || 0,
 
       confirm: String(row[8] || "0")
 
     }))
 
-    .filter(c =>
+    .filter(
 
-      [
+      item =>
 
-        c.time,
+        [
 
-        c.open,
+          item.time,
 
-        c.high,
+          item.open,
 
-        c.low,
+          item.high,
 
-        c.close
+          item.low,
 
-      ].every(Number.isFinite)
+          item.close
+
+        ].every(Number.isFinite) &&
+
+        item.high >= item.low &&
+
+        item.high >= Math.max(item.open, item.close) &&
+
+        item.low <= Math.min(item.open, item.close)
 
     );
 
@@ -1282,11 +1645,11 @@ async function candles(
 
     .filter(
 
-      c =>
+      item =>
 
-        c.confirm === "1" &&
+        item.confirm === "1" &&
 
-        c.time + cfg.ms <= Date.now()
+        item.time + config.ms <= Date.now()
 
     )
 
@@ -1298,11 +1661,13 @@ async function candles(
 
     candles: closed,
 
-    newestRawTimestamp: parsed.length
+    newestRawTimestamp:
 
-      ? Math.max(...parsed.map(x => x.time))
+      parsed.length
 
-      : null
+        ? Math.max(...parsed.map(item => item.time))
+
+        : null
 
   };
 
@@ -1318,69 +1683,65 @@ async function derivatives(symbol) {
 
   );
 
-  const [funding, interest, mark] =
+  const [funding, interest, mark] = await Promise.all([
 
-    await Promise.all([
+    okx(
 
-      okx(
+      "/api/v5/public/funding-rate",
 
-        "/api/v5/public/funding-rate",
+      { instId: instrument.instId },
 
-        { instId: instrument.instId },
+      20000
 
-        15000
+    ),
 
-      ),
+    okx(
 
-      okx(
+      "/api/v5/public/open-interest",
 
-        "/api/v5/public/open-interest",
+      {
 
-        {
+        instType: "SWAP",
 
-          instType: "SWAP",
+        instId: instrument.instId
 
-          instId: instrument.instId
+      },
 
-        },
+      20000
 
-        15000
+    ),
 
-      ),
+    okx(
 
-      okx(
+      "/api/v5/public/mark-price",
 
-        "/api/v5/public/mark-price",
+      {
 
-        {
+        instType: "SWAP",
 
-          instType: "SWAP",
+        instId: instrument.instId
 
-          instId: instrument.instId
+      },
 
-        },
+      20000
 
-        15000
+    )
 
-      )
-
-    ]);
+  ]);
 
   return {
+
+    source: "OKX",
 
     instrument: instrument.instId,
 
     fundingRate: num(funding[0]?.fundingRate),
 
-    nextFundingTime:
-
-      num(funding[0]?.nextFundingTime),
+    nextFundingTime: num(funding[0]?.nextFundingTime),
 
     openInterest: num(interest[0]?.oi),
 
-    openInterestCurrency:
-
-      interest[0]?.oiCcy || null,
+    openInterestCurrency: interest[0]?.oiCcy || null,
 
     markPrice: num(mark[0]?.markPx),
 
@@ -1388,7 +1749,63 @@ async function derivatives(symbol) {
 
     note:
 
-      "Açık pozisyon birimi sözleşme türüne göre değişebilir; ham birim ayrıca belirtilir."
+      "Açık pozisyonun birimi sözleşme türüne göre değişebilir; ham birim ayrıca belirtilir."
+
+  };
+
+}
+
+function tickerToMarketItem(
+
+  item,
+
+  market,
+
+  metadata = null
+
+) {
+
+  return {
+
+    symbol:
+
+      market === "spot"
+
+        ? item.instId.replaceAll("-", "")
+
+        : item.instId,
+
+    instrument: item.instId,
+
+    market,
+
+    last: num(item.last),
+
+    change24hPercent: round(
+
+      pct(num(item.last), num(item.open24h)),
+
+      5
+
+    ),
+
+    volume24hBase: num(item.vol24h),
+
+    volume24hQuote: num(item.volCcy24h),
+
+    high24h: num(item.high24h),
+
+    low24h: num(item.low24h),
+
+    timestamp: num(item.ts),
+
+    settlementCurrency:
+
+      metadata?.settleCcy || null,
+
+    quoteCurrency:
+
+      metadata?.quoteCcy || null
 
   };
 
@@ -1400,7 +1817,7 @@ async function marketList(market, limit = 500) {
 
     500,
 
-    Math.max(1, Number(limit) || 500)
+    Math.max(1, Math.floor(Number(limit) || 500))
 
   );
 
@@ -1412,13 +1829,21 @@ async function marketList(market, limit = 500) {
 
       { instType: "SPOT" },
 
-      15000
+      30000
 
     );
 
     return rows
 
-      .filter(t => t.instId.endsWith("-USDT"))
+      .filter(
+
+        item =>
+
+          item.instId.endsWith("-USDT") &&
+
+          num(item.last) > 0
+
+      )
 
       .sort(
 
@@ -1432,55 +1857,23 @@ async function marketList(market, limit = 500) {
 
       .slice(0, safeLimit)
 
-      .map(t => ({
-
-        symbol: t.instId.replaceAll("-", ""),
-
-        instrument: t.instId,
-
-        market: "spot",
-
-        last: num(t.last),
-
-        change24hPercent: round(
-
-          pct(num(t.last), num(t.open24h)),
-
-          5
-
-        ),
-
-        volume24hBase: num(t.vol24h),
-
-        volume24hQuote: num(t.volCcy24h),
-
-        high24h: num(t.high24h),
-
-        low24h: num(t.low24h),
-
-        timestamp: Number(t.ts)
-
-      }));
+      .map(item => tickerToMarketItem(item, "spot"));
 
   }
 
-  if (
+  if (market !== "usdtm" && market !== "coinm") {
 
-    market !== "usdtm" &&
+    throw new ApiError(
 
-    market !== "coinm"
+      "Piyasa türü spot, usdtm veya coinm olmalı.",
 
-  ) {
-
-    throw new Error(
-
-      "Piyasa türü spot, usdtm veya coinm olmalı."
+      400
 
     );
 
   }
 
-  const [rows, meta] = await Promise.all([
+  const [rows, instruments] = await Promise.all([
 
     okx(
 
@@ -1488,7 +1881,7 @@ async function marketList(market, limit = 500) {
 
       { instType: "SWAP" },
 
-      15000
+      30000
 
     ),
 
@@ -1498,43 +1891,37 @@ async function marketList(market, limit = 500) {
 
       { instType: "SWAP" },
 
-      60000
+      120000
 
     )
 
   ]);
 
-  const byId = new Map(
+  const metadata = new Map(
 
-    meta.map(x => [x.instId, x])
+    instruments.map(item => [item.instId, item])
 
   );
 
   return rows
 
-    .filter(t => {
+    .filter(item => {
 
-      const m = byId.get(t.instId);
+      const contract = metadata.get(item.instId);
 
-      return (
+      if (!contract || contract.state !== "live") {
 
-        m &&
+        return false;
 
-        m.state === "live" &&
+      }
 
-        (
+      return market === "usdtm"
 
-          market === "usdtm"
+        ? contract.settleCcy === "USDT"
 
-            ? m.settleCcy === "USDT"
+        : contract.settleCcy === contract.baseCcy &&
 
-            : m.settleCcy !== "USDT" &&
-
-              m.quoteCcy === "USD"
-
-        )
-
-      );
+            contract.ctType === "inverse";
 
     })
 
@@ -1550,43 +1937,41 @@ async function marketList(market, limit = 500) {
 
     .slice(0, safeLimit)
 
-    .map(t => ({
+    .map(
 
-      symbol: t.instId,
+      item =>
 
-      instrument: t.instId,
+        tickerToMarketItem(
 
-      market,
+          item,
 
-      last: num(t.last),
+          market,
 
-      change24hPercent: round(
+          metadata.get(item.instId)
 
-        pct(num(t.last), num(t.open24h)),
+        )
 
-        5
-
-      ),
-
-      volume24hBase: num(t.vol24h),
-
-      volume24hQuote: num(t.volCcy24h),
-
-      high24h: num(t.high24h),
-
-      low24h: num(t.low24h),
-
-      settlementCurrency:
-
-        byId.get(t.instId).settleCcy,
-
-      timestamp: Number(t.ts)
-
-    }));
+    );
 
 }
 
 async function scan(limit = 500, minQuoteVolume = 0) {
+
+  const safeLimit = Math.min(
+
+    500,
+
+    Math.max(1, Math.floor(Number(limit) || 500))
+
+  );
+
+  const minimumVolume = Math.max(
+
+    0,
+
+    Number(minQuoteVolume) || 0
+
+  );
 
   const [tickers, instruments] = await Promise.all([
 
@@ -1596,7 +1981,7 @@ async function scan(limit = 500, minQuoteVolume = 0) {
 
       { instType: "SPOT" },
 
-      15000
+      30000
 
     ),
 
@@ -1606,47 +1991,47 @@ async function scan(limit = 500, minQuoteVolume = 0) {
 
       { instType: "SWAP" },
 
-      60000
+      120000
 
     )
 
   ]);
 
-  const liveUsdt = new Set(
+  const usdtBases = new Set(
 
     instruments
 
       .filter(
 
-        x =>
+        item =>
 
-          x.state === "live" &&
+          item.state === "live" &&
 
-          x.settleCcy === "USDT"
+          item.settleCcy === "USDT"
 
       )
 
-      .map(x => x.baseCcy)
+      .map(item => item.baseCcy)
 
   );
 
-  const liveCoin = new Set(
+  const coinBases = new Set(
 
     instruments
 
       .filter(
 
-        x =>
+        item =>
 
-          x.state === "live" &&
+          item.state === "live" &&
 
-          x.settleCcy !== "USDT" &&
+          item.settleCcy === item.baseCcy &&
 
-          x.quoteCcy === "USD"
+          item.ctType === "inverse"
 
       )
 
-      .map(x => x.baseCcy)
+      .map(item => item.baseCcy)
 
   );
 
@@ -1654,13 +2039,13 @@ async function scan(limit = 500, minQuoteVolume = 0) {
 
     .filter(
 
-      t =>
+      item =>
 
-        t.instId.endsWith("-USDT") &&
+        item.instId.endsWith("-USDT") &&
 
-        num(t.last) > 0 &&
+        num(item.last) > 0 &&
 
-        num(t.volCcy24h) >= minQuoteVolume
+        (num(item.volCcy24h) || 0) >= minimumVolume
 
     )
 
@@ -1674,41 +2059,41 @@ async function scan(limit = 500, minQuoteVolume = 0) {
 
     )
 
-    .slice(
+    .slice(0, safeLimit)
 
-      0,
+    .map(item => {
 
-      Math.min(500, Math.max(1, limit))
-
-    )
-
-    .map(t => {
-
-      const base = t.instId.split("-")[0];
+      const base = item.instId.split("-")[0];
 
       return {
 
         asset: base,
 
-        spotInstrument: t.instId,
+        spotInstrument: item.instId,
 
-        last: num(t.last),
+        last: num(item.last),
 
         change24hPercent: round(
 
-          pct(num(t.last), num(t.open24h)),
+          pct(
+
+            num(item.last),
+
+            num(item.open24h)
+
+          ),
 
           5
 
         ),
 
-        quoteVolume24h: num(t.volCcy24h),
+        quoteVolume24h: num(item.volCcy24h),
 
-        hasUsdtm: liveUsdt.has(base),
+        hasUsdtm: usdtBases.has(base),
 
-        hasCoinm: liveCoin.has(base),
+        hasCoinm: coinBases.has(base),
 
-        timestamp: Number(t.ts)
+        timestamp: num(item.ts)
 
       };
 
@@ -1720,7 +2105,7 @@ async function scan(limit = 500, minQuoteVolume = 0) {
 
     count: items.length,
 
-    requestedLimit: limit,
+    requestedLimit: safeLimit,
 
     scannedAt: Date.now(),
 
@@ -1728,21 +2113,45 @@ async function scan(limit = 500, minQuoteVolume = 0) {
 
     note:
 
-      "Tarama OKX Spot USDT paritelerine göre sıralanır. Market cap verisi OKX ticker tarafından sağlanmadığından üretilmez."
+      "Tarama OKX Spot USDT paritelerine göre hacim sıralıdır. OKX ticker piyasa değeri sağlamadığı için market cap üretilmez."
 
   };
 
 }
 
-async function api(request, env) {
+function parsePositive(value, fallback, min, max) {
+
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed)) {
+
+    return fallback;
+
+  }
+
+  return Math.min(
+
+    max,
+
+    Math.max(min, Math.floor(parsed))
+
+  );
+
+}
+
+async function api(request) {
 
   const url = new URL(request.url);
 
-  const origin =
-
-    request.headers.get("Origin") || "";
+  const origin = request.headers.get("Origin") || "";
 
   if (request.method === "OPTIONS") {
+
+    if (!ALLOWED_ORIGINS.has(origin)) {
+
+      return new Response(null, { status: 403 });
+
+    }
 
     return new Response(null, {
 
@@ -1750,23 +2159,15 @@ async function api(request, env) {
 
       headers: {
 
-        "access-control-allow-origin":
+        "access-control-allow-origin": origin,
 
-          ALLOWED_ORIGINS.has(origin)
+        "access-control-allow-methods": "GET, OPTIONS",
 
-            ? origin
+        "access-control-allow-headers": "Content-Type",
 
-            : "null",
+        "access-control-max-age": "86400",
 
-        "access-control-allow-methods":
-
-          "GET, OPTIONS",
-
-        "access-control-allow-headers":
-
-          "Content-Type",
-
-        "vary": "Origin"
+        vary: "Origin"
 
       }
 
@@ -1778,7 +2179,13 @@ async function api(request, env) {
 
     return json(
 
-      { error: "Yalnızca GET desteklenir." },
+      {
+
+        error: "Yalnızca GET desteklenir.",
+
+        signal: "SİNYAL YOK"
+
+      },
 
       405,
 
@@ -1790,67 +2197,109 @@ async function api(request, env) {
 
   try {
 
-    const p = url.pathname;
+    const path = url.pathname;
 
-    const q = url.searchParams;
+    const query = url.searchParams;
 
-    if (p === "/api/health") {
+    if (
 
-      const t = await ticker("spot", "BTC-USDT");
+      path === "/api/health" ||
 
-      return json({
+      path === "/api/status"
 
-        status: "ok",
+    ) {
 
-        version: VERSION,
+      const btc = await ticker("spot", "BTC-USDT");
 
-        source: "OKX",
+      return json(
 
-        publicMarketData: true,
+        {
 
-        serverTime: Date.now(),
+          status: "ok",
 
-        btc: t
+          version: VERSION,
 
-      }, 200, origin);
+          source: "OKX",
+
+          publicMarketData: true,
+
+          serverTime: Date.now(),
+
+          cacheEntries: CACHE.size,
+
+          inFlightRequests: IN_FLIGHT.size,
+
+          btc
+
+        },
+
+        200,
+
+        origin
+
+      );
 
     }
 
-    if (p === "/api/markets") {
+    if (path === "/api/markets") {
 
-      const market = q.get("market") || "spot";
+      const market = query.get("market") || "spot";
 
-      return json({
+      const items = await marketList(
 
         market,
 
-        source: "OKX",
+        parsePositive(
 
-        items: await marketList(
+          query.get("limit"),
 
-          market,
+          500,
 
-          Number(q.get("limit") || 500)
+          1,
+
+          500
 
         )
 
-      }, 200, origin);
+      );
+
+      return json(
+
+        {
+
+          market,
+
+          source: "OKX",
+
+          count: items.length,
+
+          timestamp: Date.now(),
+
+          items
+
+        },
+
+        200,
+
+        origin
+
+      );
 
     }
 
-    if (p === "/api/ticker") {
+    if (path === "/api/ticker") {
 
       return json(
 
         await ticker(
 
-          q.get("market") || "spot",
+          query.get("market") || "spot",
 
-          q.get("symbol") ||
+          query.get("symbol") ||
 
-            q.get("instId") ||
+            query.get("instId") ||
 
-            "BTCUSDT"
+            "BTC-USDT"
 
         ),
 
@@ -1862,19 +2311,25 @@ async function api(request, env) {
 
     }
 
-    if (p === "/api/analysis") {
+    if (path === "/api/analysis") {
 
-      const market =
+      const market = query.get("market") || "spot";
 
-        q.get("market") || "spot";
+      const symbol = query.get("symbol") || "BTC-USDT";
 
-      const symbol =
+      const interval = query.get("interval") || "1h";
 
-        q.get("symbol") || "BTCUSDT";
+      if (!BAR[interval]) {
 
-      const interval =
+        throw new ApiError(
 
-        q.get("interval") || "1h";
+          "Desteklenmeyen zaman dilimi.",
+
+          400
+
+        );
+
+      }
 
       const data = await candles(
 
@@ -1884,91 +2339,145 @@ async function api(request, env) {
 
         interval,
 
-        Number(q.get("limit") || 250)
+        parsePositive(
+
+          query.get("limit"),
+
+          250,
+
+          60,
+
+          300
+
+        )
 
       );
 
       const result = analyze(data.candles);
 
-      const dataFreshness = freshness(
+      const dataFreshness = data.candles.length
 
-        result.lastClosedCandleOpenTime +
+        ? freshness(
 
-          BAR[interval].ms,
+            data.candles.at(-1).time + BAR[interval].ms,
 
-        BAR[interval].ms * 2
+            BAR[interval].ms * 2
 
-      );
+          )
+
+        : {
+
+            timestamp: null,
+
+            ageSeconds: null,
+
+            stale: true
+
+          };
 
       if (dataFreshness.stale) {
 
         result.signal = "SİNYAL YOK";
 
-        result.reasons.push(
+        result.reasons = [
 
-          "Son kapanmış mum verisi beklenenden eski; sinyal güvenilir değil."
+          ...(result.reasons || []),
 
-        );
+          "Son kapanmış mum beklenenden eski; sinyal güvenilir değil."
+
+        ];
 
         result.riskModel = null;
 
       }
 
-      return json({
+      return json(
 
-        market,
+        {
 
-        symbol,
+          market,
 
-        instrument: data.instrument.instId,
+          symbol,
 
-        interval,
+          instrument: data.instrument.instId,
 
-        source: "OKX",
+          interval,
 
-        analysis: result,
+          source: "OKX",
 
-        dataFreshness,
+          analysis: result,
 
-        warning:
+          dataFreshness,
 
-          "Bu çıktı araştırma amaçlı teknik analizdir; yatırım tavsiyesi veya işlem emri değildir."
+          warning:
 
-      }, 200, origin);
+            "Araştırma amaçlı teknik analizdir; yatırım tavsiyesi veya işlem emri değildir."
 
-    }
+        },
 
-    if (p === "/api/candles") {
+        200,
 
-      const d = await candles(
-
-        q.get("market") || "spot",
-
-        q.get("symbol") || "BTCUSDT",
-
-        q.get("interval") || "1h",
-
-        Number(q.get("limit") || 250)
+        origin
 
       );
 
-      return json({
+    }
 
-        instrument: d.instrument.instId,
+    if (path === "/api/candles") {
 
-        candles: d.candles
+      const interval = query.get("interval") || "1h";
 
-      }, 200, origin);
+      const result = await candles(
+
+        query.get("market") || "spot",
+
+        query.get("symbol") || "BTC-USDT",
+
+        interval,
+
+        parsePositive(
+
+          query.get("limit"),
+
+          250,
+
+          60,
+
+          300
+
+        )
+
+      );
+
+      return json(
+
+        {
+
+          instrument: result.instrument.instId,
+
+          interval,
+
+          count: result.candles.length,
+
+          candles: result.candles
+
+        },
+
+        200,
+
+        origin
+
+      );
 
     }
 
-    if (p === "/api/derivatives") {
+    if (path === "/api/derivatives") {
 
       return json(
 
         await derivatives(
 
-          q.get("symbol") || "BTCUSDT"
+          query.get("symbol") || "BTC-USDT"
 
         ),
 
@@ -1980,13 +2489,13 @@ async function api(request, env) {
 
     }
 
-    if (p === "/api/orderbook") {
+    if (path === "/api/orderbook") {
 
-      const inst = await resolveInstrument(
+      const instrument = await resolveInstrument(
 
-        q.get("market") || "spot",
+        query.get("market") || "spot",
 
-        q.get("symbol") || "BTCUSDT"
+        query.get("symbol") || "BTC-USDT"
 
       );
 
@@ -1996,19 +2505,17 @@ async function api(request, env) {
 
         {
 
-          instId: inst.instId,
+          instId: instrument.instId,
 
-          sz: Math.min(
+          sz: parsePositive(
 
-            50,
+            query.get("depth"),
 
-            Math.max(
+            20,
 
-              1,
+            1,
 
-              Number(q.get("depth") || 20)
-
-            )
+            50
 
           )
 
@@ -2018,53 +2525,55 @@ async function api(request, env) {
 
       );
 
-      return json({
+      return json(
 
-        instrument: inst.instId,
+        {
 
-        bids: rows[0]?.bids || [],
+          instrument: instrument.instId,
 
-        asks: rows[0]?.asks || [],
+          bids: rows[0]?.bids || [],
 
-        timestamp: Number(
+          asks: rows[0]?.asks || [],
 
-          rows[0]?.ts || Date.now()
+          timestamp: num(rows[0]?.ts)
 
-        )
+        },
 
-      }, 200, origin);
+        200,
 
-    }
-
-    if (p === "/api/trades") {
-
-      const inst = await resolveInstrument(
-
-        q.get("market") || "spot",
-
-        q.get("symbol") || "BTCUSDT"
+        origin
 
       );
 
-      const rows = await okx(
+    }
+
+    if (path === "/api/trades") {
+
+      const instrument = await resolveInstrument(
+
+        query.get("market") || "spot",
+
+        query.get("symbol") || "BTC-USDT"
+
+      );
+
+      const trades = await okx(
 
         "/api/v5/market/trades",
 
         {
 
-          instId: inst.instId,
+          instId: instrument.instId,
 
-          limit: Math.min(
+          limit: parsePositive(
 
-            100,
+            query.get("limit"),
 
-            Math.max(
+            50,
 
-              1,
+            1,
 
-              Number(q.get("limit") || 50)
-
-            )
+            100
 
           )
 
@@ -2074,25 +2583,45 @@ async function api(request, env) {
 
       );
 
-      return json({
+      return json(
 
-        instrument: inst.instId,
+        {
 
-        trades: rows
+          instrument: instrument.instId,
 
-      }, 200, origin);
+          count: trades.length,
+
+          trades
+
+        },
+
+        200,
+
+        origin
+
+      );
 
     }
 
-    if (p === "/api/scan") {
+    if (path === "/api/scan") {
 
       return json(
 
         await scan(
 
-          Number(q.get("limit") || 500),
+          parsePositive(
 
-          Number(q.get("minQuoteVolume") || 0)
+            query.get("limit"),
+
+            500,
+
+            1,
+
+            500
+
+          ),
+
+          query.get("minQuoteVolume") || 0
 
         ),
 
@@ -2104,81 +2633,145 @@ async function api(request, env) {
 
     }
 
-    if (p === "/api/ai/providers") {
+    if (path === "/api/ai/providers") {
 
-      return json({
+      return json(
 
-        enabled: false,
+        {
 
-        reason:
+          enabled: false,
 
-          "AI sağlayıcıları henüz etkinleştirilmedi. Önce kullanıcı bazlı erişim, kota ve anahtar güvenliği kurulmalıdır.",
+          reason:
 
-        providers: [
+            "AI entegrasyonları henüz etkin değil. API anahtarları güvenli Worker secret olarak kurulmadan kullanılmaz.",
 
-          "Gemini",
+          providers: [
 
-          "Groq",
+            "Gemini",
 
-          "Mistral",
+            "Groq",
 
-          "OpenRouter",
+            "Mistral",
 
-          "Cloudflare Workers AI"
+            "OpenRouter",
 
-        ]
+            "Cloudflare Workers AI"
 
-      }, 200, origin);
+          ]
+
+        },
+
+        200,
+
+        origin
+
+      );
 
     }
 
-    return json({
+    return json(
 
-      error: "API yolu bulunamadı.",
+      {
 
-      available: [
+        error: "API yolu bulunamadı.",
 
-        "/api/health",
+        available: [
 
-        "/api/markets",
+          "/api/health",
 
-        "/api/ticker",
+          "/api/status",
 
-        "/api/candles",
+          "/api/markets",
 
-        "/api/analysis",
+          "/api/ticker",
 
-        "/api/derivatives",
+          "/api/candles",
 
-        "/api/orderbook",
+          "/api/analysis",
 
-        "/api/trades",
+          "/api/derivatives",
 
-        "/api/scan",
+          "/api/orderbook",
 
-        "/api/ai/providers"
+          "/api/trades",
 
-      ]
+          "/api/scan",
 
-    }, 404, origin);
+          "/api/ai/providers"
+
+        ]
+
+      },
+
+      404,
+
+      origin
+
+    );
 
   } catch (error) {
 
-    return json({
+    const status =
 
-      error:
+      error instanceof ApiError
 
-        error.message ||
+        ? error.status
 
-        "Beklenmeyen sunucu hatası.",
+        : 502;
 
-      signal: "SİNYAL YOK",
+    const headers =
 
-      source: "OKX",
+      status === 429
 
-      timestamp: Date.now()
+        ? {
 
-    }, 502, origin);
+            "retry-after": String(
+
+              error.retryAfter || 2
+
+            )
+
+          }
+
+        : {};
+
+    return json(
+
+      {
+
+        error:
+
+          error.message ||
+
+          "Beklenmeyen sunucu hatası.",
+
+        status,
+
+        signal: "SİNYAL YOK",
+
+        source: "OKX",
+
+        timestamp: Date.now(),
+
+        retryable:
+
+          status === 429 ||
+
+          status === 502 ||
+
+          status === 503 ||
+
+          status === 504
+
+      },
+
+      status,
+
+      origin,
+
+      headers
+
+    );
 
   }
 
@@ -2222,7 +2815,7 @@ function createServer() {
 
       description:
 
-        "OKX herkese açık piyasa verisi bağlantısını BTC-USDT üzerinden kontrol eder. Emir veya hesap erişimi yapmaz.",
+        "OKX herkese açık piyasa verisini BTC-USDT ile kontrol eder. Hesap veya emir erişimi yapmaz.",
 
       inputSchema: z.object({})
 
@@ -2242,13 +2835,13 @@ function createServer() {
 
         });
 
-      } catch (e) {
+      } catch (error) {
 
         return toolText({
 
           status: "error",
 
-          error: e.message
+          error: error.message
 
         });
 
@@ -2270,15 +2863,7 @@ function createServer() {
 
       inputSchema: z.object({
 
-        market: z.enum([
-
-          "spot",
-
-          "usdtm",
-
-          "coinm"
-
-        ]),
+        market: z.enum(["spot", "usdtm", "coinm"]),
 
         symbol: z.string().min(2).max(40)
 
@@ -2286,21 +2871,21 @@ function createServer() {
 
     },
 
-    async a => {
+    async args => {
 
       try {
 
         return toolText(
 
-          await ticker(a.market, a.symbol)
+          await ticker(args.market, args.symbol)
 
         );
 
-      } catch (e) {
+      } catch (error) {
 
         return toolText({
 
-          error: e.message,
+          error: error.message,
 
           signal: "SİNYAL YOK"
 
@@ -2324,77 +2909,69 @@ function createServer() {
 
       inputSchema: z.object({
 
-        market: z.enum([
-
-          "spot",
-
-          "usdtm",
-
-          "coinm"
-
-        ]),
+        market: z.enum(["spot", "usdtm", "coinm"]),
 
         symbol: z.string().min(2).max(40),
 
-        interval: z.enum([
+        interval: z
 
-          "5m",
+          .enum(["5m", "15m", "1h", "4h", "1d", "1w"])
 
-          "15m",
-
-          "1h",
-
-          "4h",
-
-          "1d",
-
-          "1w"
-
-        ]).default("1h")
+          .default("1h")
 
       })
 
     },
 
-    async a => {
+    async args => {
 
       try {
 
-        const d = await candles(
+        const data = await candles(
 
-          a.market,
+          args.market,
 
-          a.symbol,
+          args.symbol,
 
-          a.interval,
+          args.interval,
 
           250
 
         );
 
-        const result = analyze(d.candles);
+        const result = analyze(data.candles);
 
-        const dataFreshness = freshness(
+        const dataFreshness = data.candles.length
 
-          result.lastClosedCandleOpenTime +
+          ? freshness(
 
-            BAR[a.interval].ms,
+              data.candles.at(-1).time +
 
-          BAR[a.interval].ms * 2
+                BAR[args.interval].ms,
 
-        );
+              BAR[args.interval].ms * 2
+
+            )
+
+          : {
+
+              stale: true
+
+            };
 
         if (dataFreshness.stale) {
 
           result.signal = "SİNYAL YOK";
 
-          result.reasons.push(
-
-            "Son kapanmış mum verisi beklenenden eski; sinyal güvenilir değil."
-
-          );
-
           result.riskModel = null;
+
+          result.reasons = [
+
+            ...(result.reasons || []),
+
+            "Son kapanmış mum verisi eski."
+
+          ];
 
         }
 
@@ -2402,9 +2979,9 @@ function createServer() {
 
           source: "OKX",
 
-          instrument: d.instrument.instId,
+          instrument: data.instrument.instId,
 
-          interval: a.interval,
+          interval: args.interval,
 
           analysis: result,
 
@@ -2412,11 +2989,11 @@ function createServer() {
 
         });
 
-      } catch (e) {
+      } catch (error) {
 
         return toolText({
 
-          error: e.message,
+          error: error.message,
 
           signal: "SİNYAL YOK"
 
@@ -2436,7 +3013,7 @@ function createServer() {
 
       description:
 
-        "OKX USDT-M SWAP için fonlama, açık pozisyon ve mark fiyatı bilgisi verir.",
+        "OKX USDT-M SWAP fonlama, açık pozisyon ve mark fiyatı bilgisi verir.",
 
       inputSchema: z.object({
 
@@ -2446,21 +3023,21 @@ function createServer() {
 
     },
 
-    async a => {
+    async args => {
 
       try {
 
         return toolText(
 
-          await derivatives(a.symbol)
+          await derivatives(args.symbol)
 
         );
 
-      } catch (e) {
+      } catch (error) {
 
         return toolText({
 
-          error: e.message
+          error: error.message
 
         });
 
@@ -2478,31 +3055,19 @@ function createServer() {
 
       description:
 
-        "OKX Spot USDT piyasasını hacme göre en fazla 500 varlığa kadar tarar ve vadeli sözleşme varlığını metadata üzerinden eşleştirir.",
+        "OKX Spot USDT piyasasını hacme göre en fazla 500 varlığa kadar tarar.",
 
       inputSchema: z.object({
 
-        limit: z.number()
+        limit: z.number().int().min(1).max(500).default(500),
 
-          .int()
-
-          .min(1)
-
-          .max(500)
-
-          .default(500),
-
-        minQuoteVolume: z.number()
-
-          .min(0)
-
-          .default(0)
+        minQuoteVolume: z.number().min(0).default(0)
 
       })
 
     },
 
-    async a => {
+    async args => {
 
       try {
 
@@ -2510,19 +3075,19 @@ function createServer() {
 
           await scan(
 
-            a.limit,
+            args.limit,
 
-            a.minQuoteVolume
+            args.minQuoteVolume
 
           )
 
         );
 
-      } catch (e) {
+      } catch (error) {
 
         return toolText({
 
-          error: e.message,
+          error: error.message,
 
           items: []
 
@@ -2542,19 +3107,11 @@ function createServer() {
 
       description:
 
-        "OKX emir defterinin ilk 20 seviyesini getirir. Emir göndermez.",
+        "OKX emir defterinin ilk 20 seviyesini getirir; emir göndermez.",
 
       inputSchema: z.object({
 
-        market: z.enum([
-
-          "spot",
-
-          "usdtm",
-
-          "coinm"
-
-        ]),
+        market: z.enum(["spot", "usdtm", "coinm"]),
 
         symbol: z.string().min(2).max(40)
 
@@ -2562,24 +3119,25 @@ function createServer() {
 
     },
 
-    async a => {
+    async args => {
 
       try {
-         const i = await resolveInstrument(
 
-          a.market,
+        const instrument = await resolveInstrument(
 
-          a.symbol
+          args.market,
+
+          args.symbol
 
         );
 
-        const r = await okx(
+        const rows = await okx(
 
           "/api/v5/market/books",
 
           {
 
-            instId: i.instId,
+            instId: instrument.instId,
 
             sz: 20
 
@@ -2591,21 +3149,21 @@ function createServer() {
 
         return toolText({
 
-          instrument: i.instId,
+          instrument: instrument.instId,
 
-          bids: r[0]?.bids || [],
+          bids: rows[0]?.bids || [],
 
-          asks: r[0]?.asks || [],
+          asks: rows[0]?.asks || [],
 
-          timestamp: r[0]?.ts
+          timestamp: num(rows[0]?.ts)
 
         });
 
-      } catch (e) {
+      } catch (error) {
 
         return toolText({
 
-          error: e.message
+          error: error.message
 
         });
 
@@ -2627,15 +3185,7 @@ function createServer() {
 
       inputSchema: z.object({
 
-        market: z.enum([
-
-          "spot",
-
-          "usdtm",
-
-          "coinm"
-
-        ]),
+        market: z.enum(["spot", "usdtm", "coinm"]),
 
         symbol: z.string().min(2).max(40)
 
@@ -2643,21 +3193,21 @@ function createServer() {
 
     },
 
-    async a => {
+    async args => {
 
       try {
 
-        const i = await resolveInstrument(
+        const instrument = await resolveInstrument(
 
-          a.market,
+          args.market,
 
-          a.symbol
+          args.symbol
 
         );
 
         return toolText({
 
-          instrument: i.instId,
+          instrument: instrument.instId,
 
           trades: await okx(
 
@@ -2665,7 +3215,7 @@ function createServer() {
 
             {
 
-              instId: i.instId,
+              instId: instrument.instId,
 
               limit: 100
 
@@ -2677,11 +3227,11 @@ function createServer() {
 
         });
 
-      } catch (e) {
+      } catch (error) {
 
         return toolText({
 
-          error: e.message
+          error: error.message
 
         });
 
@@ -2705,7 +3255,7 @@ export default {
 
     if (path.startsWith("/api/")) {
 
-      return api(request, env);
+      return api(request);
 
     }
 
