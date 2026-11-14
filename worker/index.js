@@ -291,11 +291,7 @@ function createServer() {
 
       try {
 
-        const path = market === "spot"
-
-          ? "/ticker/24hr"
-
-          : "/ticker/24hr";
+        const path = "/ticker/24hr";
 
         const data = await binance(market, path, {
 
@@ -311,9 +307,9 @@ function createServer() {
 
           sonFiyat: data.lastPrice,
 
-          24SaatDegisimYuzdesi: data.priceChangePercent,
+          "24SaatDegisimYuzdesi": data.priceChangePercent,
 
-          24SaatHacim: data.volume,
+          "24SaatHacim": data.volume,
 
           enYuksek: data.highPrice,
 
@@ -355,11 +351,7 @@ function createServer() {
 
       try {
 
-        const path = market === "spot"
-
-          ? "/klines"
-
-          : "/klines";
+        const path = "/klines";
 
         const candles = await binance(market, path, {
 
@@ -486,7 +478,8 @@ function createServer() {
           { symbol: "USDTTRY" }
 
         );
-         return result({
+
+        return result({
 
           sembol: "USDTTRY",
 
