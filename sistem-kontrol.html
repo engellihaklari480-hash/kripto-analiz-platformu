@@ -142,11 +142,11 @@ Herhangi bir alım satım işlemi gerçekleştirmez.
 
 Tam analiz testi 18 analiz isteği gönderir.
 
-İstekler sırayla ve aralıklı gönderilir.
+İstekler sırayla gönderilir ve her analiz arasında 2,5 saniye beklenir.
 
-OKX istek sınırlarını korumak için test sırasında gereksiz
+Bir isteğin yanıt vermesi için en fazla 45 saniye tanınır.
 
-tekrar yapılmaz.
+OKX istek sınırlarını korumak için test sırasında gereksiz tekrar yapılmaz.
 
 </p>
 
@@ -155,8 +155,7 @@ tekrar yapılmaz.
 Hızlı kontrolü başlat
 
 </button>
-
-<button id="full" type="button">
+ <button id="full" type="button">
 
 Tam analiz testini başlat
 
@@ -235,7 +234,8 @@ Supabase kayıtlarını, kod güvenliğini veya
 arka plan zamanlanmış görevlerini denetlemez.
 
 </p>
- </section>
+
+</section>
 
 </main>
 
@@ -295,7 +295,7 @@ arka plan zamanlanmış görevlerini denetlemez.
 
       controller.abort();
 
-    }, 18000);
+    }, 45000);
 
     try {
 
@@ -857,7 +857,7 @@ arka plan zamanlanmış görevlerini denetlemez.
 
             }
 
-            await wait(650);
+            await wait(2500);
 
           }
 
