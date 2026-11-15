@@ -130,9 +130,11 @@ button:disabled { opacity: .55; }
 
 <p>
 
-Bu sayfa platformun API bağlantısını, piyasa listelerini,
+Bu sayfa Worker hizmetini, OKX piyasa verilerini,
 
-teknik analiz yanıtlarını ve yapay zekâ servis durumunu kontrol eder.
+piyasa listelerini, teknik analiz yanıtlarını ve
+
+yapay zekâ servis durumunu kontrol eder.
 
 Herhangi bir alım satım işlemi gerçekleştirmez.
 
@@ -140,26 +142,21 @@ Herhangi bir alım satım işlemi gerçekleştirmez.
 
 <p class="small muted">
 
+Hızlı kontrol temel bağlantıları ve piyasa listelerini inceler.
+
 Tam analiz testi 18 analiz isteği gönderir.
 
-İstekler sırayla gönderilir ve her analiz arasında 2,5 saniye beklenir.
+İstekler sırayla gönderilir ve analizler arasında
 
-Bir isteğin yanıt vermesi için en fazla 45 saniye tanınır.
+2,5 saniye beklenir. Her isteğe en fazla 45 saniye tanınır.
 
-OKX istek sınırlarını korumak için test sırasında gereksiz tekrar yapılmaz.
+Tam analiz testi uzun sürebilir.
 
 </p>
 
-<button id="quick" type="button">
+<button id="quick" type="button">Hızlı kontrolü başlat</button>
 
-Hızlı kontrolü başlat
-
-</button>
- <button id="full" type="button">
-
-Tam analiz testini başlat
-
-</button>
+<button id="full" type="button">Tam analiz testini başlat</button>
 
 <p id="status" role="status" aria-live="polite">
 
@@ -167,7 +164,7 @@ Henüz kontrol çalıştırılmadı.
 
 </p>
 
-<p id="summary" class="muted"></p>
+<p id="summary" class="muted" aria-live="polite"></p>
 
 </section>
 
@@ -187,17 +184,13 @@ Henüz kontrol çalıştırılmadı.
 
 <h2>Kontrol geçmişi</h2>
 
-<p id="history" class="muted">
-
-Henüz kayıtlı kontrol yok.
-
-</p>
+<p id="history" class="muted">Henüz kayıtlı kontrol yok.</p>
 
 <p class="small muted">
 
 Geçmiş şimdilik yalnızca bu cihazda saklanır.
 
-Merkezi veritabanına henüz gönderilmez.
+Merkezi veritabanına gönderilmez.
 
 </p>
 
@@ -209,9 +202,9 @@ Merkezi veritabanına henüz gönderilmez.
 
 <ul>
 
-<li>Worker ve OKX bağlantısı</li>
+<li>Worker hizmetinin çalışması</li>
 
-<li>BTC fiyat yanıtı</li>
+<li>OKX BTC fiyat verisi</li>
 
 <li>Spot piyasa listesi</li>
 
@@ -219,7 +212,7 @@ Merkezi veritabanına henüz gönderilmez.
 
 <li>COIN-M piyasa listesi</li>
 
-<li>Altı zaman diliminde teknik analiz</li>
+<li>Üç piyasada altı zaman diliminde teknik analiz</li>
 
 <li>Yapay zekâ servis durum bilgisi</li>
 
@@ -227,7 +220,7 @@ Merkezi veritabanına henüz gönderilmez.
 
 <p class="small muted">
 
-Bu sürüm henüz geçmiş sinyal performansını,
+Bu sürüm geçmiş sinyal performansını,
 
 Supabase kayıtlarını, kod güvenliğini veya
 
@@ -294,8 +287,7 @@ arka plan zamanlanmış görevlerini denetlemez.
     const timer = setTimeout(() => {
 
       controller.abort();
-
-    }, 45000);
+     }, 45000);
 
     try {
 
@@ -303,11 +295,7 @@ arka plan zamanlanmış görevlerini denetlemez.
 
         method: "GET",
 
-        headers: {
-
-          Accept: "application/json"
-
-        },
+        headers: { Accept: "application/json" },
 
         signal: controller.signal,
 
@@ -329,12 +317,6 @@ arka plan zamanlanmış görevlerini denetlemez.
 
       if (!response.ok) {
 
-        const detail = data && data.error
-
-          ? data.error
-
-          : "HTTP " + response.status;
-
         if (response.status === 429) {
 
           throw new Error(
@@ -345,7 +327,15 @@ arka plan zamanlanmış görevlerini denetlemez.
 
         }
 
-        throw new Error(detail);
+        throw new Error(
+
+          data && data.error
+
+            ? data.error
+
+            : "HTTP " + response.status
+
+        );
 
       }
 
@@ -375,6 +365,8 @@ arka plan zamanlanmış görevlerini denetlemez.
 
     const heading = document.createElement("strong");
 
+    const description = document.createElement("span");
+
     heading.className =
 
       state === "BAŞARILI"
@@ -388,8 +380,6 @@ arka plan zamanlanmış görevlerini denetlemez.
           : "fail";
 
     heading.textContent = label + " — " + state + ". ";
-
-    const description = document.createElement("span");
 
     description.textContent = detail || "";
 
@@ -451,7 +441,9 @@ arka plan zamanlanmış görevlerini denetlemez.
 
       if (!Array.isArray(history) || !history.length) {
 
-        $("history").textContent = "Henüz kayıtlı kontrol yok.";
+        $("history").textContent =
+
+          "Henüz kayıtlı kontrol yok.";
 
         return;
 
@@ -478,6 +470,50 @@ arka plan zamanlanmış görevlerini denetlemez.
         "Kontrol geçmişi okunamadı.";
 
     }
+
+  }
+
+  function getBtcPrice(data) {
+
+    const candidates = [
+
+      data?.last,
+
+      data?.data?.last,
+
+      data?.ticker?.last,
+
+      data?.result?.last,
+
+      data?.data?.[0]?.last
+
+    ];
+
+    for (const value of candidates) {
+
+      const number = Number(value);
+
+      if (Number.isFinite(number) && number > 0) {
+
+        return number;
+
+      }
+
+    }
+
+    return null;
+
+  }
+
+  function getInstrument(item) {
+
+    return item?.instrument || item?.symbol || "";
+
+  }
+
+  function getPrice(item) {
+
+    return Number(item?.last || item?.lastPrice || 0);
 
   }
 
@@ -531,7 +567,7 @@ arka plan zamanlanmış görevlerini denetlemez.
 
       $("status").textContent =
 
-        "Worker ve OKX bağlantısı kontrol ediliyor.";
+        "Worker hizmeti kontrol ediliyor.";
 
       try {
 
@@ -539,25 +575,27 @@ arka plan zamanlanmış görevlerini denetlemez.
 
         if (
 
-          health.status === "ok" &&
+          health &&
 
-          health.source === "OKX" &&
+          (
 
-          Number(health.btc?.last) > 0
+            health.status === "ok" ||
+
+            health.worker === "ok"
+
+          )
 
         ) {
 
           record(
 
-            "Worker ve OKX bağlantısı",
+            "Worker hizmeti",
 
             "BAŞARILI",
 
-            "Sürüm " +
+            "Worker yanıt veriyor. Sürüm: " +
 
-            (health.version || "bilinmiyor") +
-
-            ". BTC fiyat yanıtı geçerli."
+            (health.version || "bilgi yok") + "."
 
           );
 
@@ -565,11 +603,11 @@ arka plan zamanlanmış görevlerini denetlemez.
 
           record(
 
-            "Worker ve OKX bağlantısı",
+            "Worker hizmeti",
 
             "UYARI",
 
-            "Yanıt geldi ancak sağlık alanları beklenen biçimde değil."
+            "Yanıt alındı ancak sağlık durumu beklenen biçimde değil."
 
           );
 
@@ -579,7 +617,63 @@ arka plan zamanlanmış görevlerini denetlemez.
 
         record(
 
-          "Worker ve OKX bağlantısı",
+          "Worker hizmeti",
+
+          "BAŞARISIZ",
+
+          error.message
+
+        );
+
+      }
+
+      $("status").textContent =
+
+        "OKX BTC fiyat verisi kontrol ediliyor.";
+
+      try {
+
+        const ticker = await get("/api/ticker", {
+
+          market: "spot",
+
+          symbol: "BTC-USDT"
+
+        });
+
+        const btcPrice = getBtcPrice(ticker);
+
+        if (btcPrice !== null) {
+
+          record(
+
+            "OKX BTC fiyat verisi",
+
+            "BAŞARILI",
+
+            "BTC-USDT fiyatı alındı: " + btcPrice + "."
+
+          );
+
+        } else {
+
+          record(
+
+            "OKX BTC fiyat verisi",
+
+            "UYARI",
+
+            "Yanıt alındı ancak fiyat alanı doğrulanamadı."
+
+          );
+
+        }
+
+      } catch (error) {
+
+        record(
+
+          "OKX BTC fiyat verisi",
 
           "BAŞARISIZ",
 
@@ -617,21 +711,30 @@ arka plan zamanlanmış görevlerini denetlemez.
 
             );
 
+            marketItems[market.key] = [];
+
             continue;
 
           }
+           const valid = data.items.filter(item => {
 
-          const valid = data.items.filter(item =>
+            const instrument = getInstrument(item);
 
-            item &&
+            const price = getPrice(item);
 
-            typeof item.instrument === "string" &&
+            return (
 
-            Number(item.last) > 0 &&
+              typeof instrument === "string" &&
 
-            Number.isFinite(Number(item.last))
+              instrument.length > 0 &&
 
-          );
+              Number.isFinite(price) &&
+
+              price > 0
+
+            );
+
+          });
 
           marketItems[market.key] = valid;
 
@@ -753,9 +856,11 @@ arka plan zamanlanmış görevlerini denetlemez.
 
             items.find(item =>
 
-              /(^|[-])BTC([-]|$)/i.test(item.instrument)
+              /(^|[-])BTC([-]|$)/i.test(getInstrument(item))
 
             ) || items[0];
+
+          const symbol = getInstrument(coin);
 
           for (const timeframe of TIMEFRAMES) {
 
@@ -771,7 +876,7 @@ arka plan zamanlanmış görevlerini denetlemez.
 
                 market: market.key,
 
-                symbol: coin.instrument,
+                symbol,
 
                 interval: timeframe,
 
@@ -781,11 +886,23 @@ arka plan zamanlanmış görevlerini denetlemez.
 
               const analysis = payload.analysis || {};
 
+              const candleCount =
+
+                Number(analysis.candleCount);
+
+              const rsi = Number(analysis.rsi14);
+
+              const hasSignal =
+
+                typeof analysis.signal === "string" &&
+
+                analysis.signal.length > 0;
+
               if (
 
-                typeof analysis.signal !== "string" ||
+                !hasSignal ||
 
-                !Number.isFinite(Number(analysis.candleCount))
+                !Number.isFinite(candleCount)
 
               ) {
 
@@ -795,19 +912,17 @@ arka plan zamanlanmış görevlerini denetlemez.
 
                   "BAŞARISIZ",
 
-                  "Analiz yanıtı beklenen alanları içermiyor."
+                  "Analiz yanıtında sinyal veya mum sayısı bulunamadı."
 
                 );
 
               } else if (
 
-                Number(analysis.candleCount) < 210 ||
+                candleCount < 210 ||
 
-                analysis.rsi14 === null ||
+                !Number.isFinite(rsi) ||
 
-                !Number.isFinite(Number(analysis.rsi14)) ||
-
-                payload.dataFreshness?.stale
+                payload.dataFreshness?.stale === true
 
               ) {
 
@@ -831,11 +946,11 @@ arka plan zamanlanmış görevlerini denetlemez.
 
                   "BAŞARILI",
 
-                  coin.instrument + ". " +
+                  symbol + ". " +
 
-                  analysis.candleCount +
+                  candleCount +
 
-                  " kapanmış mum. Sinyal: " +
+                  " mum. Sinyal: " +
 
                   analysis.signal + "."
 
