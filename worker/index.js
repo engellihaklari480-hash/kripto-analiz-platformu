@@ -6,13 +6,15 @@ import { z } from "zod";
 
 const OKX = "https://www.okx.com";
 
-const VERSION = "3.1.0";
+const VERSION = "3.2.0";
 
 const CACHE = new Map();
 
 const IN_FLIGHT = new Map();
 
 const CACHE_LIMIT = 400;
+
+let OKX_COOLDOWN_UNTIL = 0;
 
 const BAR = {
 
@@ -192,15 +194,23 @@ async function requestOkx(url, timeoutMs = 12000) {
 
     if (!response.ok) {
 
-      const retryHeader = Number(response.headers.get("Retry-After"));
+      const retryHeader = response.headers.get("Retry-After");
+
+      const retryNumber = Number(retryHeader);
+
+      const retryDate = retryHeader ? Date.parse(retryHeader) : NaN;
 
       const retryAfter =
 
-        Number.isFinite(retryHeader) && retryHeader > 0
+        Number.isFinite(retryNumber) && retryNumber > 0
 
-          ? retryHeader
+          ? retryNumber
 
-          : null;
+          : Number.isFinite(retryDate)
+
+            ? Math.max(1, Math.ceil((retryDate - Date.now()) / 1000))
+
+            : null;
 
       throw new ApiError(
 
@@ -215,6 +225,20 @@ async function requestOkx(url, timeoutMs = 12000) {
     }
 
     const body = await response.json();
+
+    if (body?.code === "50011" || body?.code === "50040") {
+
+      throw new ApiError(
+
+        `OKX istek sınırı: ${body.msg || "Çok sık istek gönderildi."}`,
+
+        429,
+
+        2
+
+      );
+
+    }
 
     if (!body || body.code !== "0" || !Array.isArray(body.data)) {
 
@@ -304,17 +328,15 @@ async function okx(path, params = {}, ttl = 10000, options = {}) {
 
       let lastError;
 
-      for (let attempt = 0; attempt < 2; attempt++) {
+      for (let attempt = 0; attempt < 3; attempt++) {
+
+        const cooldownRemaining = OKX_COOLDOWN_UNTIL - Date.now();
+
+        if (cooldownRemaining > 0) await sleep(cooldownRemaining);
 
         try {
 
-          const data = await requestOkx(
-
-            url,
-
-            options.timeoutMs || 12000
-
-          );
+          const data = await requestOkx(url, options.timeoutMs || 12000);
 
           return cacheSet(key, data, ttl);
 
@@ -322,15 +344,15 @@ async function okx(path, params = {}, ttl = 10000, options = {}) {
 
           lastError = error;
 
-          if (attempt === 0 && error.status === 429) {
+          if (error.status === 429 && attempt < 2) {
 
-            const waitMs = Math.min(
+            const backoffMs = Math.min(10000, 1500 * (2 ** attempt));
 
-              2000,
+            const requestedWaitMs = error.retryAfter ? error.retryAfter * 1000 : backoffMs;
 
-              Math.max(500, (error.retryAfter || 1) * 1000)
+            const waitMs = Math.min(30000, Math.max(backoffMs, requestedWaitMs));
 
-            );
+            OKX_COOLDOWN_UNTIL = Math.max(OKX_COOLDOWN_UNTIL, Date.now() + waitMs);
 
             await sleep(waitMs);
 
@@ -381,6 +403,32 @@ function cleanSymbol(value) {
   }
 
   return symbol;
+
+}
+
+function swapBaseCurrency(item) {
+
+  const parts = String(item?.instId || "").split("-");
+
+  return parts.length >= 3 ? parts[0] : String(item?.baseCcy || parts[0] || "").toUpperCase();
+
+}
+
+function isUsdtMarginedSwap(item) {
+
+  const parts = String(item?.instId || "").split("-");
+
+  return Boolean(item && item.state === "live" && parts.length >= 3 && parts[1] === "USDT" && item.settleCcy === "USDT" && item.ctType === "linear");
+
+}
+
+function isCoinMarginedSwap(item) {
+
+  const parts = String(item?.instId || "").split("-");
+
+  const base = swapBaseCurrency(item);
+
+  return Boolean(item && item.state === "live" && parts.length >= 3 && parts[1] === "USD" && item.settleCcy === base && item.ctType === "inverse");
 
 }
 
@@ -442,11 +490,9 @@ async function resolveInstrument(market, symbol) {
 
   const raw = cleanSymbol(symbol);
 
-  const base = raw.includes("-")
+  const parts = raw.split("-");
 
-    ? raw.split("-")[0]
-
-    : raw.replace(/USDT$|USD$/, "");
+  const base = raw.includes("-") ? parts[0] : raw.replace(/USDT$|USD$/, "");
 
   const list = await okx(
 
@@ -458,27 +504,13 @@ async function resolveInstrument(market, symbol) {
 
   );
 
-  const candidates = list.filter(
+  const exact = raw.endsWith("-SWAP") ? list.find(item => item.instId === raw) : null;
 
-    item => item.state === "live" && item.baseCcy === base
+  const candidates = list.filter(item => item.state === "live" && swapBaseCurrency(item) === base);
 
-  );
+  const matchesMarket = market === "usdtm" ? isUsdtMarginedSwap : isCoinMarginedSwap;
 
-  const chosen =
-
-    market === "usdtm"
-
-      ? candidates.find(item => item.settleCcy === "USDT")
-
-      : candidates.find(
-
-          item =>
-
-            item.settleCcy === base &&
-
-            item.ctType === "inverse"
-
-        );
+  const chosen = exact && matchesMarket(exact) ? exact : candidates.find(matchesMarket);
 
   if (!chosen) {
 
@@ -1411,6 +1443,7 @@ function analyze(candles) {
       ? last - 1.5 * currentAtr
 
       : direction === "short" 
+
         ? last + 1.5 * currentAtr
 
         : null;
@@ -1915,13 +1948,7 @@ async function marketList(market, limit = 500) {
 
       }
 
-      return market === "usdtm"
-
-        ? contract.settleCcy === "USDT"
-
-        : contract.settleCcy === contract.baseCcy &&
-
-            contract.ctType === "inverse";
+      return market === "usdtm" ? isUsdtMarginedSwap(contract) : isCoinMarginedSwap(contract);
 
     })
 
@@ -1997,43 +2024,9 @@ async function scan(limit = 500, minQuoteVolume = 0) {
 
   ]);
 
-  const usdtBases = new Set(
+  const usdtBases = new Set(instruments.filter(isUsdtMarginedSwap).map(swapBaseCurrency));
 
-    instruments
-
-      .filter(
-
-        item =>
-
-          item.state === "live" &&
-
-          item.settleCcy === "USDT"
-
-      )
-
-      .map(item => item.baseCcy)
-
-  );
-
-  const coinBases = new Set(
-
-    instruments
-
-      .filter(
-
-        item =>
-
-          item.state === "live" &&
-
-          item.settleCcy === item.baseCcy &&
-
-          item.ctType === "inverse"
-
-      )
-
-      .map(item => item.baseCcy)
-
-  );
+  const coinBases = new Set(instruments.filter(isCoinMarginedSwap).map(swapBaseCurrency));
 
   const items = tickers
 
@@ -3246,8 +3239,7 @@ function createServer() {
 }
 
 const mcpHandler = createMcpHandler(createServer);
-
-export default {
+ export default {
 
   async fetch(request, env, ctx) {
 
