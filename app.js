@@ -8,9 +8,9 @@
 
     api: "https://kripto-analiz-api.engellihaklari480.workers.dev",
 
-    refreshMs: 300000,
+    refreshMs: 180000,
 
-    timeoutMs: 18000,
+    timeoutMs: 45000,
 
     marketLimit: 500,
 
@@ -48,7 +48,9 @@
 
     refreshTimer: null,
 
-    lastUpdated: null
+    lastUpdated: null,
+
+    analysisCache: new Map()
 
   };
 
@@ -234,6 +236,16 @@
 
     });
 
+    const cacheKey = url.toString();
+
+    if (path === "/api/analysis") {
+
+      const cached = state.analysisCache.get(cacheKey);
+
+      if (cached && Date.now() - cached.timestamp < 180000) return cached.data;
+
+    }
+
     const controller = new AbortController();
 
     const timer = setTimeout(() => controller.abort(), CONFIG.timeoutMs);
@@ -273,6 +285,12 @@
         }
 
         throw new Error(detail);
+
+      }
+
+      if (path === "/api/analysis") {
+
+        state.analysisCache.set(cacheKey, { data, timestamp: Date.now() });
 
       }
 
@@ -942,6 +960,20 @@
 
       grid,
 
+      "Son kapanmış mum zamanı",
+
+      analysis.lastClosedCandleOpenTime
+
+        ? new Date(analysis.lastClosedCandleOpenTime).toLocaleString("tr-TR")
+
+        : "Veri yok"
+
+    );
+
+    addDetail(
+
+      grid,
+
       "Veri güncelliği",
 
       payload.dataFreshness?.stale ? "Eski veri — sinyal geçersiz" : "Güncel kapanmış mum"
@@ -1168,7 +1200,8 @@
 
         symbol: coin.instrument,
 
-        interval: timeframe, 
+        interval: timeframe,
+
         limit: 250
 
       });
@@ -1574,7 +1607,8 @@
         el["market-type"].value = value;
 
       }
-       state.analysisToken++;
+
+      state.analysisToken++;
 
       setCurrencyNote();
 
@@ -1642,7 +1676,7 @@
 
         (health.version || "bilinmiyor") +
 
-        ". OKX veri kaynağı hazır."
+        ". OKX bağlantısı piyasa verisi istendiğinde kontrol edilir."
 
       );
 
