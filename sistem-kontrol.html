@@ -1,0 +1,952 @@
+
+
+<!doctype html>
+
+<html lang="tr">
+
+<head>
+
+<meta charset="utf-8">
+
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<meta name="theme-color" content="#101522">
+
+<title>Kripto Analiz - Sistem Kontrolü</title>
+
+<style>
+
+:root {
+
+  color-scheme: dark;
+
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+
+  background: #101522;
+
+  color: #f4f7fc;
+
+  line-height: 1.6;
+
+}
+
+* { box-sizing: border-box; }
+
+body {
+
+  margin: 0 auto;
+
+  padding: 20px;
+
+  max-width: 900px;
+
+}
+
+h1, h2 { line-height: 1.3; }
+
+button {
+
+  min-height: 48px;
+
+  padding: 10px 16px;
+
+  margin: 5px 8px 5px 0;
+
+  border: 1px solid #52627b;
+
+  border-radius: 10px;
+
+  background: #202c42;
+
+  color: white;
+
+  font: inherit;
+
+}
+
+button:focus-visible {
+
+  outline: 3px solid #ffe082;
+
+  outline-offset: 3px;
+
+}
+
+button:disabled { opacity: .55; }
+
+.panel {
+
+  padding: 18px;
+
+  margin: 16px 0;
+
+  border: 1px solid #344158;
+
+  border-radius: 14px;
+
+  background: #192235;
+
+}
+
+.muted { color: #bdc8d8; }
+
+.small { font-size: .92rem; }
+
+.ok { color: #55dfa4; }
+
+.warn { color: #ffd166; }
+
+.fail { color: #ff8585; }
+
+#results li {
+
+  padding: 10px 0;
+
+  border-bottom: 1px solid #344158;
+
+  overflow-wrap: anywhere;
+
+}
+
+</style>
+
+</head>
+
+<body>
+
+<header>
+
+<h1>Kripto Analiz Platformu</h1>
+
+<p class="muted">Otomatik sistem denetimi ve analiz test merkezi</p>
+
+</header>
+
+<main>
+
+<section class="panel">
+
+<h2>Sistem kontrol merkezi</h2>
+
+<p>
+
+Bu sayfa platformun API bağlantısını, piyasa listelerini,
+
+teknik analiz yanıtlarını ve yapay zekâ servis durumunu kontrol eder.
+
+Herhangi bir alım satım işlemi gerçekleştirmez.
+
+</p>
+
+<p class="small muted">
+
+Tam analiz testi 18 analiz isteği gönderir.
+
+İstekler sırayla ve aralıklı gönderilir.
+
+OKX istek sınırlarını korumak için test sırasında gereksiz
+
+tekrar yapılmaz.
+
+</p>
+
+<button id="quick" type="button">
+
+Hızlı kontrolü başlat
+
+</button>
+
+<button id="full" type="button">
+
+Tam analiz testini başlat
+
+</button>
+
+<p id="status" role="status" aria-live="polite">
+
+Henüz kontrol çalıştırılmadı.
+
+</p>
+
+<p id="summary" class="muted"></p>
+
+</section>
+
+<section class="panel">
+
+<h2>Kontrol sonuçları</h2>
+
+<ol id="results" aria-label="Sistem kontrol sonuçları">
+
+<li>Henüz sonuç yok.</li>
+
+</ol>
+
+</section>
+
+<section class="panel">
+
+<h2>Kontrol geçmişi</h2>
+
+<p id="history" class="muted">
+
+Henüz kayıtlı kontrol yok.
+
+</p>
+
+<p class="small muted">
+
+Geçmiş şimdilik yalnızca bu cihazda saklanır.
+
+Merkezi veritabanına henüz gönderilmez.
+
+</p>
+
+</section>
+
+<section class="panel">
+
+<h2>Test kapsamı</h2>
+
+<ul>
+
+<li>Worker ve OKX bağlantısı</li>
+
+<li>BTC fiyat yanıtı</li>
+
+<li>Spot piyasa listesi</li>
+
+<li>USDT-M piyasa listesi</li>
+
+<li>COIN-M piyasa listesi</li>
+
+<li>Altı zaman diliminde teknik analiz</li>
+
+<li>Yapay zekâ servis durum bilgisi</li>
+
+</ul>
+
+<p class="small muted">
+
+Bu sürüm henüz geçmiş sinyal performansını,
+
+Supabase kayıtlarını, kod güvenliğini veya
+
+arka plan zamanlanmış görevlerini denetlemez.
+
+</p>
+ </section>
+
+</main>
+
+<script>
+
+"use strict";
+
+(() => {
+
+  const API =
+
+    "https://kripto-analiz-api.engellihaklari480.workers.dev";
+
+  const HISTORY_KEY =
+
+    "kriptoAnalizSistemDenetimGecmisi";
+
+  const MARKETS = [
+
+    { key: "spot", label: "Spot" },
+
+    { key: "usdtm", label: "USDT-M" },
+
+    { key: "coinm", label: "COIN-M" }
+
+  ];
+
+  const TIMEFRAMES = [
+
+    "5m", "15m", "1h", "4h", "1d", "1w"
+
+  ];
+
+  const $ = id => document.getElementById(id);
+
+  let running = false;
+
+  function wait(ms) {
+
+    return new Promise(resolve => setTimeout(resolve, ms));
+
+  }
+
+  async function get(path, params = {}) {
+
+    const url = new URL(API + path);
+
+    Object.entries(params).forEach(([key, value]) => {
+
+      url.searchParams.set(key, String(value));
+
+    });
+
+    const controller = new AbortController();
+
+    const timer = setTimeout(() => {
+
+      controller.abort();
+
+    }, 18000);
+
+    try {
+
+      const response = await fetch(url.toString(), {
+
+        method: "GET",
+
+        headers: {
+
+          Accept: "application/json"
+
+        },
+
+        signal: controller.signal,
+
+        cache: "no-store"
+
+      });
+
+      let data;
+
+      try {
+
+        data = await response.json();
+
+      } catch (_) {
+
+        throw new Error("Sunucu yanıtı okunamadı.");
+
+      }
+
+      if (!response.ok) {
+
+        const detail = data && data.error
+
+          ? data.error
+
+          : "HTTP " + response.status;
+
+        if (response.status === 429) {
+
+          throw new Error(
+
+            "İstek sınırı aşıldı. Birkaç dakika bekleyin."
+
+          );
+
+        }
+
+        throw new Error(detail);
+
+      }
+
+      return data;
+
+    } catch (error) {
+
+      if (error.name === "AbortError") {
+
+        throw new Error("İstek zaman aşımına uğradı.");
+
+      }
+
+      throw error;
+
+    } finally {
+
+      clearTimeout(timer);
+
+    }
+
+  }
+
+  function addResult(label, state, detail) {
+
+    const item = document.createElement("li");
+
+    const heading = document.createElement("strong");
+
+    heading.className =
+
+      state === "BAŞARILI"
+
+        ? "ok"
+
+        : state === "UYARI"
+
+          ? "warn"
+
+          : "fail";
+
+    heading.textContent = label + " — " + state + ". ";
+
+    const description = document.createElement("span");
+
+    description.textContent = detail || "";
+
+    item.append(heading, description);
+
+    $("results").appendChild(item);
+
+  }
+
+  function saveHistory(summary) {
+
+    try {
+
+      const old = JSON.parse(
+
+        localStorage.getItem(HISTORY_KEY) || "[]"
+
+      );
+
+      const history = Array.isArray(old) ? old : [];
+
+      history.unshift({
+
+        time: Date.now(),
+
+        ...summary
+
+      });
+
+      localStorage.setItem(
+
+        HISTORY_KEY,
+
+        JSON.stringify(history.slice(0, 20))
+
+      );
+
+      showHistory();
+
+    } catch (_) {
+
+      $("summary").textContent +=
+
+        " Kontrol geçmişi kaydedilemedi.";
+
+    }
+
+  }
+
+  function showHistory() {
+
+    try {
+
+      const history = JSON.parse(
+
+        localStorage.getItem(HISTORY_KEY) || "[]"
+
+      );
+
+      if (!Array.isArray(history) || !history.length) {
+
+        $("history").textContent = "Henüz kayıtlı kontrol yok.";
+
+        return;
+
+      }
+
+      const item = history[0];
+
+      $("history").textContent =
+
+        "Son kontrol: " +
+
+        new Date(item.time).toLocaleString("tr-TR") +
+
+        ". Başarılı: " + item.passed +
+
+        ", uyarı: " + item.warnings +
+
+        ", başarısız: " + item.failed + ".";
+
+    } catch (_) {
+
+      $("history").textContent =
+
+        "Kontrol geçmişi okunamadı.";
+
+    }
+
+  }
+
+  async function run(full) {
+
+    if (running) return;
+
+    running = true;
+
+    $("quick").disabled = true;
+
+    $("full").disabled = true;
+
+    $("results").replaceChildren();
+
+    $("summary").textContent = "";
+
+    const counts = {
+
+      passed: 0,
+
+      warnings: 0,
+
+      failed: 0
+
+    };
+
+    const record = (label, state, detail) => {
+
+      if (state === "BAŞARILI") {
+
+        counts.passed++;
+
+      } else if (state === "UYARI") {
+
+        counts.warnings++;
+
+      } else {
+
+        counts.failed++;
+
+      }
+
+      addResult(label, state, detail);
+
+    };
+
+    const marketItems = {};
+
+    try {
+
+      $("status").textContent =
+
+        "Worker ve OKX bağlantısı kontrol ediliyor.";
+
+      try {
+
+        const health = await get("/api/health");
+
+        if (
+
+          health.status === "ok" &&
+
+          health.source === "OKX" &&
+
+          Number(health.btc?.last) > 0
+
+        ) {
+
+          record(
+
+            "Worker ve OKX bağlantısı",
+
+            "BAŞARILI",
+
+            "Sürüm " +
+
+            (health.version || "bilinmiyor") +
+
+            ". BTC fiyat yanıtı geçerli."
+
+          );
+
+        } else {
+
+          record(
+
+            "Worker ve OKX bağlantısı",
+
+            "UYARI",
+
+            "Yanıt geldi ancak sağlık alanları beklenen biçimde değil."
+
+          );
+
+        }
+
+      } catch (error) {
+
+        record(
+
+          "Worker ve OKX bağlantısı",
+
+          "BAŞARISIZ",
+
+          error.message
+
+        );
+
+      }
+
+      for (const market of MARKETS) {
+
+        $("status").textContent =
+
+          market.label + " piyasa listesi kontrol ediliyor.";
+
+        try {
+
+          const data = await get("/api/markets", {
+
+            market: market.key,
+
+            limit: 500
+
+          });
+
+          if (!Array.isArray(data.items)) {
+
+            record(
+
+              market.label + " piyasa listesi",
+
+              "BAŞARISIZ",
+
+              "Yanıtta varlık listesi bulunamadı."
+
+            );
+
+            continue;
+
+          }
+
+          const valid = data.items.filter(item =>
+
+            item &&
+
+            typeof item.instrument === "string" &&
+
+            Number(item.last) > 0 &&
+
+            Number.isFinite(Number(item.last))
+
+          );
+
+          marketItems[market.key] = valid;
+
+          if (valid.length) {
+
+            record(
+
+              market.label + " piyasa listesi",
+
+              "BAŞARILI",
+
+              valid.length + " geçerli varlık alındı."
+
+            );
+
+          } else {
+
+            record(
+
+              market.label + " piyasa listesi",
+
+              "UYARI",
+
+              "Geçerli fiyatlı varlık bulunamadı."
+
+            );
+
+          }
+
+        } catch (error) {
+
+          marketItems[market.key] = [];
+
+          record(
+
+            market.label + " piyasa listesi",
+
+            "BAŞARISIZ",
+
+            error.message
+
+          );
+
+        }
+
+      }
+
+      $("status").textContent =
+
+        "Yapay zekâ servis durumu kontrol ediliyor.";
+
+      try {
+
+        const ai = await get("/api/ai/providers");
+
+        if (ai.enabled === true) {
+
+          record(
+
+            "Yapay zekâ servisi",
+
+            "BAŞARILI",
+
+            "Sağlayıcı katmanı etkin görünüyor."
+
+          );
+
+        } else {
+
+          record(
+
+            "Yapay zekâ servisi",
+
+            "UYARI",
+
+            "Servis yanıt veriyor ancak sağlayıcılar etkin değil."
+
+          );
+
+        }
+
+      } catch (error) {
+
+        record(
+
+          "Yapay zekâ servisi",
+
+          "BAŞARISIZ",
+
+          error.message
+
+        );
+
+      }
+
+      if (full) {
+
+        for (const market of MARKETS) {
+
+          const items = marketItems[market.key] || [];
+
+          if (!items.length) {
+
+            record(
+
+              market.label + " analiz matrisi",
+
+              "UYARI",
+
+              "Piyasa verisi alınamadığı için analizler atlandı."
+
+            );
+
+            continue;
+
+          }
+
+          const coin =
+
+            items.find(item =>
+
+              /(^|[-])BTC([-]|$)/i.test(item.instrument)
+
+            ) || items[0];
+
+          for (const timeframe of TIMEFRAMES) {
+
+            $("status").textContent =
+
+              market.label + " " +
+
+              timeframe + " analizi kontrol ediliyor.";
+
+            try {
+
+              const payload = await get("/api/analysis", {
+
+                market: market.key,
+
+                symbol: coin.instrument,
+
+                interval: timeframe,
+
+                limit: 250
+
+              });
+
+              const analysis = payload.analysis || {};
+
+              if (
+
+                typeof analysis.signal !== "string" ||
+
+                !Number.isFinite(Number(analysis.candleCount))
+
+              ) {
+
+                record(
+
+                  market.label + " " + timeframe,
+
+                  "BAŞARISIZ",
+
+                  "Analiz yanıtı beklenen alanları içermiyor."
+
+                );
+
+              } else if (
+
+                Number(analysis.candleCount) < 210 ||
+
+                analysis.rsi14 === null ||
+
+                !Number.isFinite(Number(analysis.rsi14)) ||
+
+                payload.dataFreshness?.stale
+
+              ) {
+
+                record(
+
+                  market.label + " " + timeframe,
+
+                  "UYARI",
+
+                  "Mum sayısı, RSI veya veri güncelliği kontrol edilmeli. Sinyal: " +
+
+                  analysis.signal + "."
+
+                );
+
+              } else {
+
+                record(
+
+                  market.label + " " + timeframe,
+
+                  "BAŞARILI",
+
+                  coin.instrument + ". " +
+
+                  analysis.candleCount +
+
+                  " kapanmış mum. Sinyal: " +
+
+                  analysis.signal + "."
+
+                );
+
+              }
+
+            } catch (error) {
+
+              record(
+
+                market.label + " " + timeframe,
+
+                "BAŞARISIZ",
+
+                error.message
+
+              );
+
+            }
+
+            await wait(650);
+
+          }
+
+        }
+
+      } else {
+
+        record(
+
+          "Zaman dilimi analizleri",
+
+          "UYARI",
+
+          "Hızlı kontrol bu testleri çalıştırmadı."
+
+        );
+
+      }
+
+    } catch (error) {
+
+      record(
+
+        "Genel kontrol",
+
+        "BAŞARISIZ",
+
+        error.message
+
+      );
+
+    } finally {
+
+      const summary = {
+
+        passed: counts.passed,
+
+        warnings: counts.warnings,
+
+        failed: counts.failed,
+
+        full
+
+      };
+
+      const total =
+
+        counts.passed +
+
+        counts.warnings +
+
+        counts.failed;
+
+      $("summary").textContent =
+
+        "Toplam " + total + " kontrol. " +
+
+        counts.passed + " başarılı, " +
+
+        counts.warnings + " uyarı, " +
+
+        counts.failed + " başarısız.";
+
+      $("status").textContent =
+
+        "Sistem kontrolü tamamlandı.";
+
+      saveHistory(summary);
+
+      $("quick").disabled = false;
+
+      $("full").disabled = false;
+
+      running = false;
+
+    }
+
+  }
+
+  $("quick").addEventListener("click", () => run(false));
+
+  $("full").addEventListener("click", () => run(true));
+
+  showHistory();
+
+})();
+
+</script>
+
+</body>
+
+</html>
