@@ -1,0 +1,545 @@
+
+
+<!doctype html>
+
+<html lang="tr">
+
+<head>
+
+<meta charset="utf-8">
+
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<meta name="theme-color" content="#101522">
+
+<title>Kripto Analiz - API Teşhis Merkezi</title>
+
+<style>
+
+:root {
+
+  color-scheme: dark;
+
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+
+  background: #101522;
+
+  color: #f4f7fc;
+
+  line-height: 1.6;
+
+}
+
+* { box-sizing: border-box; }
+
+body {
+
+  max-width: 850px;
+
+  margin: auto;
+
+  padding: 20px;
+
+}
+
+h1 { font-size: 1.6rem; }
+
+h2 { font-size: 1.2rem; }
+
+p { overflow-wrap: anywhere; }
+
+button {
+
+  display: block;
+
+  width: 100%;
+
+  min-height: 52px;
+
+  margin: 12px 0;
+
+  padding: 12px;
+
+  border: 1px solid #64748b;
+
+  border-radius: 10px;
+
+  background: #26364f;
+
+  color: white;
+
+  font-size: 1rem;
+
+  font-weight: 600;
+
+}
+
+button:disabled { opacity: .5; }
+
+.panel {
+
+  margin: 16px 0;
+
+  padding: 16px;
+
+  border: 1px solid #39465c;
+
+  border-radius: 12px;
+
+  background: #192335;
+
+}
+
+#results {
+
+  white-space: pre-wrap;
+
+  overflow-wrap: anywhere;
+
+  font-size: .95rem;
+
+}
+
+.status { font-weight: 700; }
+
+small { color: #b8c4d6; }
+
+</style>
+
+</head>
+
+<body>
+
+<h1>API Teşhis Merkezi</h1>
+
+<p>Bu sayfa mevcut Worker ve OKX bağlantısını kontrollü biçimde test eder. Otomatik işlem veya emir göndermez.</p>
+
+<div class="panel">
+
+  <h2>Test seçenekleri</h2>
+
+  <button id="health">Worker bağlantısını kontrol et</button>
+
+  <button id="ticker">BTC fiyat bağlantısını kontrol et</button>
+
+  <button id="analysis">Üç piyasada kontrollü analiz testi</button>
+
+  <button id="clear">Sonuçları temizle</button>
+
+</div>
+
+<div class="panel">
+
+  <h2>Test durumu</h2>
+
+  <p id="status" role="status" aria-live="polite">Henüz test yapılmadı.</p>
+
+  <div id="results" aria-live="polite">Test sonuçları burada görüntülenecek.</div>
+
+</div>
+
+<script>
+
+"use strict";
+
+(() => {
+
+  const API =
+
+    "https://kripto-analiz-api.engellihaklari480.workers.dev";
+
+  const $ = id => document.getElementById(id);
+
+  const buttons = [
+
+    $("health"),
+
+    $("ticker"),
+
+    $("analysis")
+
+  ];
+
+  let running = false;
+
+  function wait(ms) {
+
+    return new Promise(resolve => setTimeout(resolve, ms));
+
+  }
+
+  function write(message) {
+
+    $("results").textContent +=
+
+      "\n\n" + message;
+
+  }
+
+  function timestamp() {
+
+    return new Date().toLocaleString("tr-TR");
+
+  }
+
+  function setRunning(value) {
+
+    running = value;
+
+    buttons.forEach(button => {
+
+      button.disabled = value;
+
+    });
+
+  }
+
+  async function callApi(path, label) {
+
+    const started = Date.now();
+
+    write(label + "\nİstek gönderiliyor: " + timestamp());
+
+    try {
+
+      const response = await fetch(API + path, {
+
+        method: "GET",
+
+        headers: {
+
+          Accept: "application/json"
+
+        },
+
+        cache: "no-store"
+
+      });
+
+      const elapsed = Date.now() - started;
+
+      const raw = await response.text();
+
+      let data;
+
+      try {
+
+        data = JSON.parse(raw);
+
+      } catch (_) {
+
+        data = { rawResponse: raw.slice(0, 2000) };
+
+      }
+
+      write(
+
+        "HTTP durumu: " + response.status +
+
+        "\nYanıt süresi: " + elapsed + " ms" +
+
+        "\nSunucu yanıtı:\n" +
+
+        JSON.stringify(data, null, 2)
+
+      );
+
+      return {
+
+        ok: response.ok,
+
+        status: response.status,
+
+        elapsed,
+
+        data
+
+      };
+
+    } catch (error) {
+
+      const elapsed = Date.now() - started;
+
+      write(
+
+        "BAĞLANTI HATASI" +
+
+        "\nSüre: " + elapsed + " ms" +
+
+        "\nHata: " + error.message
+
+      );
+
+      return {
+
+        ok: false,
+
+        status: 0,
+
+        elapsed,
+
+        error: error.message
+
+      };
+
+    }
+
+  }
+
+  async function runHealth() {
+
+    if (running) return;
+
+    setRunning(true);
+
+    $("results").textContent = "";
+
+    $("status").textContent =
+
+      "Worker bağlantısı kontrol ediliyor.";
+
+    try {
+
+      const result = await callApi(
+
+        "/api/health",
+
+        "WORKER SAĞLIK KONTROLÜ"
+
+      );
+
+      $("status").textContent = result.ok
+
+        ? "Worker bağlantısı başarılı."
+
+        : "Worker bağlantısı başarısız.";
+
+    } finally {
+
+      setRunning(false);
+
+    }
+
+  }
+
+  async function runTicker() {
+
+    if (running) return;
+
+    setRunning(true);
+
+    $("results").textContent = "";
+
+    $("status").textContent =
+
+      "BTC fiyat verisi kontrol ediliyor.";
+
+    try {
+
+      const result = await callApi(
+
+        "/api/ticker?market=spot&symbol=BTC-USDT",
+
+        "BTC SPOT FİYAT TESTİ"
+
+      );
+
+      $("status").textContent = result.ok
+
+        ? "BTC fiyat testi tamamlandı."
+
+        : "BTC fiyat testi başarısız.";
+
+    } finally {
+
+      setRunning(false);
+
+    }
+
+  }
+
+  async function runAnalysis() {
+
+    if (running) return;
+
+    setRunning(true);
+
+    $("results").textContent = "";
+
+    $("status").textContent =
+
+      "Kontrollü analiz testi başladı.";
+
+    const tests = [
+
+      {
+
+        name: "SPOT 1 SAAT",
+
+        market: "spot",
+
+        symbol: "BTC-USDT"
+
+      },
+
+      {
+
+        name: "USDT-M 1 SAAT",
+
+        market: "usdtm",
+
+        symbol: "BTC-USDT"
+
+      },
+
+      {
+
+        name: "COIN-M 1 SAAT",
+
+        market: "coinm",
+
+        symbol: "BTC-USD"
+
+      }
+
+    ];
+
+    let passed = 0;
+
+    let failed = 0;
+
+    try {
+
+      for (let i = 0; i < tests.length; i++) {
+
+        const test = tests[i];
+
+        const path =
+
+          "/api/analysis?market=" +
+
+          encodeURIComponent(test.market) +
+
+          "&symbol=" +
+
+          encodeURIComponent(test.symbol) +
+
+          "&interval=1h&limit=250";
+
+        const result = await callApi(
+
+          path,
+
+          test.name
+
+        );
+
+        if (
+
+          result.ok &&
+
+          result.data &&
+
+          result.data.analysis
+
+        ) {
+
+          passed++;
+
+          write(
+
+            "ANALİZ SONUCU: BAŞARILI" +
+
+            "\nEnstrüman: " +
+
+            (result.data.instrument || "Bilinmiyor") +
+
+            "\nSinyal: " +
+
+            (result.data.analysis.signal || "SİNYAL YOK") +
+
+            "\nVeri kaynağı: " +
+
+            (result.data.source || "Bilinmiyor")
+
+          );
+
+        } else {
+
+          failed++;
+
+          write(
+
+            "ANALİZ SONUCU: BAŞARISIZ"
+
+          );
+
+        }
+
+        if (i < tests.length - 1) {
+
+          $("status").textContent =
+
+            "Sonraki analizden önce 6 saniye bekleniyor.";
+
+          await wait(6000);
+
+        }
+
+      }
+
+      $("status").textContent =
+
+        "Kontrollü test tamamlandı. " +
+
+        passed + " başarılı, " +
+
+        failed + " başarısız.";
+
+      write(
+
+        "\nGENEL SONUÇ" +
+
+        "\nBaşarılı: " + passed +
+
+        "\nBaşarısız: " + failed +
+
+        "\nBitiş: " + timestamp()
+
+      );
+
+    } finally {
+
+      setRunning(false);
+
+    }
+
+  }
+
+  $("health").addEventListener("click", runHealth);
+
+  $("ticker").addEventListener("click", runTicker);
+
+  $("analysis").addEventListener("click", runAnalysis);
+
+  $("clear").addEventListener("click", () => {
+
+    if (running) return;
+
+    $("results").textContent =
+
+      "Sonuçlar temizlendi.";
+
+    $("status").textContent =
+
+      "Henüz test yapılmadı.";
+
+  });
+
+})();
+
+</script>
+
+</body>
+
+</html>
